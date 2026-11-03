@@ -2,7 +2,7 @@
 <h1 align="center">
   <img src="assets/icon.png" alt="Runner" width="128" />
   <br />
-  Runner
+  Runner 
 </h1>
 
 <p align="center">
