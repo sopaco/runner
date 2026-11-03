@@ -19,6 +19,70 @@ use runner_app::ui::Tooltip;
 
 use runner_core::protocol::node::NodeType;
 
+/// A tab row heading a linked group (#748): collapsed, it shows its most urgent
+/// mission instead of the chat's own status and the group's summary under its
+/// title; expanded, how many missions it links. Its box spans the group's inner
+/// width, with the chevron inside its own left padding and no border of its own.
+#[derive(Default)]
+pub(super) struct GroupHead {
+    pub(super) attention: Option<AttentionState>,
+    pub(super) links: Option<usize>,
+    pub(super) summary: Option<AnyElement>,
+    pub(super) in_group: bool,
+}
+
+/// A group head's count of linked missions, shown while the group is expanded.
+fn link_count(count: usize) -> gpui::Div {
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(rems(3. / 16.))
+        .text_size(theme::text_caption())
+        .text_color(theme::faint())
+        .child(
+            svg()
+                .path("link.svg")
+                .size(rems(10. / 16.))
+                .text_color(theme::faint()),
+        )
+        .child(count.to_string())
+}
+
+/// A collapsed group head's glyph for its most urgent mission.
+pub(super) fn group_state_glyph(id: &str, attention: AttentionState) -> gpui::Div {
+    let id = id.to_owned();
+    div()
+        .debug_selector(move || format!("LINK_GROUP_STATE {id} {attention:?}"))
+        .child(super::link::mission_attention_indicator(attention))
+}
+
+/// The accent label a drop shows: Link to <chat> over a chat row, Unlink from
+/// <chat> on a reorder line outside the mission's group.
+fn drop_pill(icon: &'static str, label: String, below: bool) -> impl IntoElement {
+    div()
+        .absolute()
+        .right(rems(6. / 16.))
+        .when(below, |pill| pill.bottom(rems(-9. / 16.)))
+        .when(!below, |pill| pill.top(rems(-9. / 16.)))
+        .px(rems(6. / 16.))
+        .py(rems(1. / 16.))
+        .flex()
+        .items_center()
+        .gap(rems(4. / 16.))
+        .rounded_full()
+        .bg(theme::accent())
+        .text_size(theme::text_caption())
+        .text_color(theme::accent_ink())
+        .child(
+            svg()
+                .path(icon)
+                .size(rems(10. / 16.))
+                .text_color(theme::accent_ink()),
+        )
+        .child(label)
+}
+
 pub(crate) fn project_header_icon(collapsed: bool) -> ChatIcon {
     ChatIcon::generic(if collapsed {
         "folder.svg"
@@ -61,6 +125,7 @@ impl Sidebar {
         drop_kind: DropKind,
         parent_id: Option<String>,
         visible_ids: Vec<String>,
+        group: GroupHead,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let active = self.tab_selected(&node.id, cx);
@@ -97,6 +162,7 @@ impl Sidebar {
                 attention,
                 shortcut_index,
                 active,
+                group,
                 cx,
             )
         } else {
@@ -128,6 +194,9 @@ impl Sidebar {
                         });
                     }),
                 )
+            } else if let Some(attention) = group.attention {
+                // A collapsed group shows its most urgent mission, not the chat's own status.
+                sidebar_row_trailing_slot().child(group_state_glyph(&node.id, attention))
             } else {
                 sidebar_row_trailing_slot().child(
                     self.render_rollup_attention(
@@ -142,7 +211,8 @@ impl Sidebar {
                     ),
                 )
             };
-            sidebar_item_row(
+            let collapsed_head = group.summary.is_some();
+            super::elements::sidebar_item_row_with(
                 SharedString::from(format!("sidebar-tab-{}", node.id)),
                 &SidebarItemView {
                     title: label.clone(),
@@ -151,11 +221,17 @@ impl Sidebar {
                     selected: active,
                     pinned: node.pinned_position.is_some(),
                 },
+                group.summary,
+                !group.in_group,
             )
+            .when(group.in_group, |row| {
+                super::link::head_shape(row, collapsed_head)
+            })
             .when(self.front_page.is_remote(), |row| {
                 row.debug_selector(|| "REMOTE_SIDEBAR_ROW".into())
             })
             .when(!live, |row| row.text_color(theme::faint()))
+            .children(group.links.map(link_count))
             .child(trailing)
             .on_hover({
                 let id = node.id.clone();
@@ -185,6 +261,23 @@ impl Sidebar {
         if renaming {
             return base;
         }
+        let link_chats = members
+            .iter()
+            .filter(|member| super::link::is_agent_chat(member))
+            .map(|member| {
+                let title = member
+                    .local
+                    .as_ref()
+                    .map(|entry| {
+                        session_label_live(
+                            entry,
+                            self.live_title(&member.session_id, cx).as_deref(),
+                        )
+                    })
+                    .unwrap_or_else(|| label.clone());
+                (member.session_id.clone(), title)
+            })
+            .collect();
         self.decorate_draggable_row(
             base,
             &node,
@@ -193,6 +286,8 @@ impl Sidebar {
             drop_kind,
             parent_id,
             visible_ids,
+            None,
+            link_chats,
             cx,
         )
     }
@@ -208,6 +303,7 @@ impl Sidebar {
         drop_kind: DropKind,
         parent_id: Option<String>,
         visible_ids: Vec<String>,
+        group: Option<String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let active = self.mission_selected(&summary.mission.id, cx);
@@ -231,6 +327,7 @@ impl Sidebar {
                 attention,
                 shortcut_index,
                 active,
+                GroupHead::default(),
                 cx,
             )
         } else {
@@ -265,14 +362,8 @@ impl Sidebar {
                     }),
                 )
             } else {
-                sidebar_row_trailing_slot().child(self.render_rollup_attention(
-                    self.mission_status_rollup(&summary),
-                    Some(node.id.clone()),
-                    self.archiving_missions.contains(&summary.mission.id),
-                    false,
-                    SharedString::from(format!("attention-{}", node.id)),
-                    cx,
-                ))
+                sidebar_row_trailing_slot()
+                    .child(self.render_mission_attention(&summary, &node.id, cx))
             };
             sidebar_item_row(
                 SharedString::from(format!("sidebar-mission-{}", summary.mission.id)),
@@ -324,6 +415,8 @@ impl Sidebar {
             drop_kind,
             parent_id,
             visible_ids,
+            group,
+            Vec::new(),
             cx,
         )
     }
@@ -338,6 +431,8 @@ impl Sidebar {
         visible_projects: Vec<String>,
         tab_index_by_node: &HashMap<String, u8>,
         launcher_row: Option<&ProjectScope>,
+        rows: &[SidebarRow],
+        groups: &super::link::LinkGroups,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let collapsed = self
@@ -376,6 +471,7 @@ impl Sidebar {
                 },
                 None,
                 selected,
+                GroupHead::default(),
                 cx,
             )
         } else {
@@ -383,6 +479,7 @@ impl Sidebar {
                 SharedString::from(format!("sidebar-project-{}", project.id)),
                 selected,
                 false,
+                true,
             )
             .child(
                 svg()
@@ -478,8 +575,9 @@ impl Sidebar {
         let nested_ids = nested
             .iter()
             .map(|row| row.node().id.clone())
+            .filter(|id| groups.head(id).is_none())
             .collect::<Vec<_>>();
-        let has_nested = !nested.is_empty();
+        let has_nested = !nested_ids.is_empty();
         let project_node_id = node.id.clone();
         let drag_node_id = node.id.clone();
         let drag_label = label.clone();
@@ -525,6 +623,7 @@ impl Sidebar {
                                 &over_project_id,
                                 after,
                                 format!("project:{}:{after}", over_project_id),
+                                None,
                                 cx,
                             );
                         } else {
@@ -537,8 +636,8 @@ impl Sidebar {
                         }
                     },
                 ))
-                .on_drop(cx.listener(|this, drag: &SidebarNodeDrag, _, cx| {
-                    this.commit_sidebar_drop(&drag.node_id, cx);
+                .on_drop(cx.listener(|this, drag: &SidebarNodeDrag, window, cx| {
+                    this.commit_sidebar_drop(&drag.node_id, window, cx);
                 }));
         }
         let container_marker = format!("container:{}", node.id);
@@ -571,21 +670,16 @@ impl Sidebar {
                             vec![empty_sidebar_label(crate::i18n::text("ui.empty"))]
                         }
                     } else {
-                        nested
-                            .into_iter()
-                            .map(|row| {
-                                let shortcut_index = tab_index_by_node.get(&row.node().id).copied();
-                                self.render_sidebar_row(
-                                    row,
-                                    Some(project_id.clone()),
-                                    shortcut_index,
-                                    DropKind::Leaf,
-                                    Some(node.id.clone()),
-                                    nested_ids.clone(),
-                                    cx,
-                                )
-                            })
-                            .collect()
+                        self.render_scope(
+                            nested,
+                            rows,
+                            groups,
+                            Some(project_id.clone()),
+                            DropKind::Leaf,
+                            Some(node.id.clone()),
+                            tab_index_by_node,
+                            cx,
+                        )
                     })
                     .children((has_nested && self.dragged_id.is_some()).then(|| {
                         self.render_end_drop_divider(
@@ -623,8 +717,8 @@ impl Sidebar {
                     this.update_project_container_drop_target(&dragged, &drop_project_id, &[], cx);
                 },
             ))
-            .on_drop(cx.listener(|this, drag: &SidebarNodeDrag, _, cx| {
-                this.commit_sidebar_drop(&drag.node_id, cx);
+            .on_drop(cx.listener(|this, drag: &SidebarNodeDrag, window, cx| {
+                this.commit_sidebar_drop(&drag.node_id, window, cx);
             }));
         if active {
             area = area.border_t_2().border_color(theme::accent());
@@ -673,12 +767,13 @@ impl Sidebar {
                         &hovered_id,
                         true,
                         drop_marker.clone(),
+                        None,
                         cx,
                     );
                 },
             ))
-            .on_drop(cx.listener(|this, drag: &SidebarNodeDrag, _, cx| {
-                this.commit_sidebar_drop(&drag.node_id, cx);
+            .on_drop(cx.listener(|this, drag: &SidebarNodeDrag, window, cx| {
+                this.commit_sidebar_drop(&drag.node_id, window, cx);
             }));
         if active {
             divider = divider.border_t_2().border_color(theme::accent());
@@ -696,12 +791,14 @@ impl Sidebar {
         kind: DropKind,
         parent_id: Option<String>,
         visible_ids: Vec<String>,
+        group: Option<String>,
+        link_chats: Vec<(String, String)>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if !self.front_page.supports(&["move"]) && !self.front_page.supports(&["reorderPinned"]) {
             return row;
         }
-        let drag = SidebarNodeDrag::new(node.id.clone(), label, icon);
+        let drag = SidebarNodeDrag::new(node.id.clone(), label.clone(), icon);
         let drag_root = cx.entity();
         let hovered_id = node.id.clone();
         let marker_prefix = match kind {
@@ -713,11 +810,19 @@ impl Sidebar {
         let marker_after = format!("{marker_prefix}:{}:true", node.id);
         let active_before = self.drop_marker.as_deref() == Some(marker_before.as_str());
         let active_after = self.drop_marker.as_deref() == Some(marker_after.as_str());
+        let link_active = self.drop_marker.as_deref() == Some(format!("link:{}", node.id).as_str());
+        let link_label = match link_chats.as_slice() {
+            [(_, title)] => title.clone(),
+            _ => label,
+        };
+        let dragged_here = group.is_some() && self.dragged_id.as_deref() == Some(node.id.as_str());
         let mut wrapper = crate::platform_ui::sidebar_row_wrapper(SharedString::from(format!(
             "sidebar-drag-{}",
             node.id
         )))
+        .relative()
         .cursor_move()
+        .when(dragged_here, |wrapper| wrapper.opacity(0.45))
         .child(row)
         .child(drag.measure())
         .on_drag(drag, move |drag: &SidebarNodeDrag, _, _, cx| {
@@ -732,7 +837,29 @@ impl Sidebar {
                     return;
                 }
                 let dragged = event.drag(cx).node_id.clone();
-                let after = event.event.position.y > event.bounds.center().y;
+                let mut after = event.event.position.y > event.bounds.center().y;
+                if !link_chats.is_empty()
+                    && this.can_link_drop(&dragged, &hovered_id, &link_chats, cx)
+                {
+                    match super::link::chat_row_zone(
+                        f32::from(event.event.position.y),
+                        f32::from(event.bounds.top()),
+                        f32::from(event.bounds.size.height),
+                    ) {
+                        super::link::ChatRowZone::Link => {
+                            this.set_link_drop(
+                                super::link::LinkDrop {
+                                    mission_node: dragged,
+                                    tab_node: hovered_id.clone(),
+                                    chats: link_chats.clone(),
+                                },
+                                cx,
+                            );
+                            return;
+                        }
+                        zone => after = zone == super::link::ChatRowZone::After,
+                    }
+                }
                 this.update_row_drop_target(
                     &dragged,
                     kind,
@@ -741,17 +868,38 @@ impl Sidebar {
                     &hovered_id,
                     after,
                     format!("{marker_prefix}:{hovered_id}:{after}"),
+                    group.clone(),
                     cx,
                 );
             },
         ))
-        .on_drop(cx.listener(|this, drag: &SidebarNodeDrag, _, cx| {
-            this.commit_sidebar_drop(&drag.node_id, cx);
+        .on_drop(cx.listener(|this, drag: &SidebarNodeDrag, window, cx| {
+            this.commit_sidebar_drop(&drag.node_id, window, cx);
         }));
-        if active_before {
-            wrapper = wrapper.border_t_2().border_color(theme::accent());
-        } else if active_after {
-            wrapper = wrapper.border_b_2().border_color(theme::accent());
+        if link_active {
+            wrapper = wrapper
+                .border_1()
+                .border_color(theme::accent())
+                .rounded_sm()
+                .child(drop_pill(
+                    "link.svg",
+                    crate::i18n::tf("format.link_to_chat_named", &[("chat", link_label)]),
+                    false,
+                ));
+        } else if active_before || active_after {
+            wrapper = if active_before {
+                wrapper.border_t_2()
+            } else {
+                wrapper.border_b_2()
+            }
+            .border_color(theme::accent());
+            if let Some(chat) = &self.drag_unlink {
+                wrapper = wrapper.child(drop_pill(
+                    "link-2-off.svg",
+                    crate::i18n::tf("format.unlink_from_chat", &[("chat", chat.clone())]),
+                    active_after,
+                ));
+            }
         }
         wrapper.into_any_element()
     }
@@ -766,6 +914,7 @@ impl Sidebar {
         attention: AttentionState,
         shortcut_index: Option<u8>,
         shortcut_selected: bool,
+        group: GroupHead,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(rename) = self
@@ -777,41 +926,54 @@ impl Sidebar {
         };
         let (icon, live) = icon;
         let input = rename.input.clone();
-        sidebar_row_shell(
-            SharedString::from(format!("sidebar-rename-{id}")),
-            true,
-            false,
-        )
-        .children(disclosure_icon.map(|icon| {
-            svg()
-                .path(icon)
-                .size(rems(12. / 16.))
-                .flex_none()
-                .text_color(theme::text())
-        }))
-        .child(sidebar_icon(icon, live))
-        .child(div().min_w(px(0.)).flex_1().child(input))
-        .child(attention_indicator(attention))
-        .children(
-            shortcut_index
-                .filter(|_| self.show_shortcut_pills)
-                .map(|index| {
-                    sidebar_row_trailing_slot().child(tab_shortcut_pill(index, shortcut_selected))
-                }),
-        )
-        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-            match event.keystroke.key.as_str() {
-                "enter" => {
-                    cx.stop_propagation();
-                    this.submit_sidebar_rename(window, cx);
+        let row_id = SharedString::from(format!("sidebar-rename-{id}"));
+        let collapsed_head = group.summary.is_some();
+        let field = div().min_w(px(0.)).flex_1().child(input);
+        sidebar_row_shell(row_id.clone(), true, false, !group.in_group)
+            .when(group.in_group, |row| {
+                super::link::head_shape(row, collapsed_head)
+            })
+            .children(disclosure_icon.map(|icon| {
+                svg()
+                    .path(icon)
+                    .size(rems(12. / 16.))
+                    .flex_none()
+                    .text_color(theme::text())
+            }))
+            .child(super::elements::sidebar_mark(
+                row_id,
+                sidebar_icon(icon, live),
+            ))
+            .map(|row| match group.summary {
+                Some(summary) => row.child(field.flex().flex_col().child(summary)),
+                None => row.child(field),
+            })
+            .children(group.links.map(link_count))
+            .child(match group.attention {
+                Some(attention) => group_state_glyph(id, attention).into_any_element(),
+                None => attention_indicator(attention).into_any_element(),
+            })
+            .children(
+                shortcut_index
+                    .filter(|_| self.show_shortcut_pills)
+                    .map(|index| {
+                        sidebar_row_trailing_slot()
+                            .child(tab_shortcut_pill(index, shortcut_selected))
+                    }),
+            )
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                match event.keystroke.key.as_str() {
+                    "enter" => {
+                        cx.stop_propagation();
+                        this.submit_sidebar_rename(window, cx);
+                    }
+                    "escape" => {
+                        cx.stop_propagation();
+                        this.cancel_sidebar_rename(window, cx);
+                    }
+                    _ => {}
                 }
-                "escape" => {
-                    cx.stop_propagation();
-                    this.cancel_sidebar_rename(window, cx);
-                }
-                _ => {}
-            }
-        }))
-        .into_any_element()
+            }))
+            .into_any_element()
     }
 }
