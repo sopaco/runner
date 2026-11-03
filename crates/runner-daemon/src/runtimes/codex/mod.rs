@@ -1,6 +1,7 @@
 pub(crate) mod capture;
 pub(crate) mod codex_status;
 pub(crate) mod codex_trust;
+mod conversation;
 pub(crate) mod fork;
 pub(crate) mod models;
 mod program_status;
@@ -22,8 +23,20 @@ fn capture_sessions_root(
     env: &std::collections::BTreeMap<String, String>,
     cwd: Option<&Path>,
 ) -> Option<PathBuf> {
-    let home = env
-        .get("CODEX_HOME")
+    codex_home(env.get("CODEX_HOME").map(String::as_str), cwd).map(|home| home.join("sessions"))
+}
+
+fn probe_home(ctx: &ProbeContext<'_>) -> Option<PathBuf> {
+    let configured = ctx.role_env.get("CODEX_HOME").map(String::as_str);
+    #[cfg(test)]
+    if configured.is_none() && crate::runtimes::test_home().is_none() {
+        return None;
+    }
+    codex_home(configured, ctx.cwd.map(Path::new))
+}
+
+fn codex_home(configured: Option<&str>, cwd: Option<&Path>) -> Option<PathBuf> {
+    let home = configured
         .filter(|value| !value.trim().is_empty())
         .map(PathBuf::from)
         .or_else(|| {
@@ -39,7 +52,7 @@ fn capture_sessions_root(
             .or_else(|| std::env::current_dir().ok())?
             .join(home)
     };
-    Some(home.join("sessions"))
+    Some(home)
 }
 
 pub(crate) fn inject_codex_hooks(args: &[String], windows: bool) -> bool {
@@ -293,6 +306,20 @@ impl RuntimeAdapter for Codex {
     }
     fn mission_dir_args(&self, dir: Option<&Path>) -> Vec<String> {
         add_dir(dir)
+    }
+    fn probe_uses_shell_env(&self) -> bool {
+        true
+    }
+    fn conversation_exists(&self, key: &str, ctx: &ProbeContext<'_>) -> Option<bool> {
+        conversation::conversation_exists(&probe_home(ctx)?, key)
+    }
+    fn recover_conversation(
+        &self,
+        session_id: &str,
+        missing_key: &str,
+        ctx: &ProbeContext<'_>,
+    ) -> Option<String> {
+        conversation::recover_conversation(&probe_home(ctx)?, session_id, missing_key)
     }
     fn launch_args(&self, ctx: &LaunchContext<'_>) -> Vec<String> {
         let mut out = Vec::new();
