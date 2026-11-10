@@ -181,13 +181,10 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.prune_launchers(cx);
-        if self.remote_client.is_local() {
-            self.ensure_active_chat_detail(cx);
-        }
+        self.ensure_active_chat_detail(cx);
         let error_banner = self
             .chat_error
             .clone()
-            .filter(|_| self.remote_client.is_local())
             .filter(|_| !self.app_store.read(cx).daemon_disconnected)
             .map(|error| {
                 runner_app::ui::notice_banner(error.resolve(), runner_app::ui::Tone::Danger)
@@ -199,7 +196,6 @@ impl NativeRoot {
         let warning_banner = self
             .chat_warning
             .clone()
-            .filter(|_| self.remote_client.is_local())
             .filter(|_| !self.app_store.read(cx).daemon_disconnected)
             .map(|warning| {
                 runner_app::ui::notice_banner(warning, runner_app::ui::Tone::Warning).child(
@@ -264,26 +260,10 @@ impl NativeRoot {
                 )
                 .into_any_element();
         };
-        if self.remote_client.is_local()
-            && layout.all_session_ids().iter().any(|id| {
-                self.app_store
-                    .read(cx)
-                    .bridge
-                    .session(id)
-                    .is_some_and(|terminal| !terminal.control().desktop())
-            })
-        {
-            if let Err(error) = self.ensure_owned_active_tab_attached(window, cx) {
-                self.chat_error = Some(error.to_string().into());
-            }
-        }
-        let group_control = self.remote_client.is_local() && self.tab_control_covered(&layout, cx);
         let show_start = start_surface_visible(Some(&layout));
         let grouped = layout.root.leaves().len() > 1;
         let terminal_tab = self.active_tab_is_terminal(cx);
-        if self.remote_client.is_local() {
-            self.prune_pane_state(&layout);
-        }
+        self.prune_pane_state(&layout);
         let pane_tree = self.render_pane_node(&layout.root, &layout, cx);
         let tab_archiving =
             split_tab_archiving(&layout, |id| self.sidebar_archiving_session(id, cx));
@@ -312,20 +292,6 @@ impl NativeRoot {
                     SessionOverlayKind::Archiving,
                 ))
             });
-        let tab_body = if group_control {
-            crate::terminal::control::cover(
-                tab_body,
-                "take-back-tab",
-                &self
-                    .control_tab_session_ids(&layout, cx)
-                    .iter()
-                    .filter_map(|id| self.attached.get(id))
-                    .collect::<Vec<_>>(),
-                crate::terminal::control::GroupKind::Tab,
-            )
-        } else {
-            tab_body
-        };
         let chat_column = div()
             .relative()
             .flex_1()
@@ -341,9 +307,8 @@ impl NativeRoot {
             .children(error_banner)
             .children(warning_banner)
             .child(tab_body);
-        let panel_open = self.remote_client.is_local()
-            && !show_start
-            && side_panel_open(self.settings(cx).chat_panel_open, terminal_tab);
+        let panel_open =
+            !show_start && side_panel_open(self.settings(cx).chat_panel_open, terminal_tab);
         let (panel_visibility, panel_animating) = self.chat_panel_visibility.animate_to(
             if panel_open { 1. } else { 0. },
             Instant::now(),

@@ -15,7 +15,6 @@ pub(crate) mod panes;
 pub(crate) mod profile_page;
 pub(crate) mod project_field;
 pub(crate) mod quit_dialog;
-pub(crate) mod remote_client;
 pub(crate) mod render_cache;
 pub(crate) mod roles;
 pub(crate) mod root;

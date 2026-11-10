@@ -408,105 +408,76 @@ impl Sidebar {
             let active_rows = self.resolved_active_rows(cx);
             scroll = scroll.child(self.render_active_groups(active_rows, cx));
         }
-        let workspace_rows = WORKSPACE_ENTRIES
-            .into_iter()
-            .filter(|entry| {
-                !self.front_page.is_remote()
-                    || match entry {
-                        WorkspaceEntry::NewTab => {
-                            self.front_page.supports(&["catalog", "startChat"])
-                        }
-                        WorkspaceEntry::Role | WorkspaceEntry::Crew => {
-                            self.front_page.supports(&["catalog"])
-                        }
-                    }
-            })
-            .map(|entry| {
-                let active = if self.front_page.is_remote() {
-                    matches!(
-                        (entry, &self.remote_selection),
-                        (
-                            WorkspaceEntry::NewTab,
-                            Some(crate::surfaces::remote_client::RemoteItem::Launcher)
-                        ) | (
-                            WorkspaceEntry::Role,
-                            Some(crate::surfaces::remote_client::RemoteItem::Roles)
-                        ) | (
-                            WorkspaceEntry::Crew,
-                            Some(crate::surfaces::remote_client::RemoteItem::Crews)
-                        )
+        let workspace_rows = WORKSPACE_ENTRIES.into_iter().map(|entry| {
+            let active = entry.selected(&route);
+            let active = if entry == WorkspaceEntry::NewTab {
+                (active
+                    || self
+                        .shell
+                        .upgrade()
+                        .is_some_and(|shell| shell.read(cx).launcher_page_visible()))
+                    && launcher_row.is_none()
+            } else {
+                active
+            };
+            match entry {
+                WorkspaceEntry::NewTab => {
+                    let shell = self.shell.clone();
+                    let shortcut = keymap::effective_binding(
+                        "new-chat",
+                        &self.app_store.read(cx).settings.keymap_overrides,
                     )
-                } else {
-                    entry.selected(&route)
-                };
-                let active = if entry == WorkspaceEntry::NewTab {
-                    (active
-                        || self
-                            .shell
-                            .upgrade()
-                            .is_some_and(|shell| shell.read(cx).launcher_page_visible()))
-                        && launcher_row.is_none()
-                } else {
-                    active
-                };
-                match entry {
-                    WorkspaceEntry::NewTab => {
+                    .map(|combo| keymap::format_combo(&combo));
+                    workspace_new_tab_row(shortcut, true, active, move |window, cx| {
+                        if let Some(shell) = shell.upgrade() {
+                            shell.update(cx, |shell, shell_cx| {
+                                let scope =
+                                    ProjectScope::or_root(shell.active_project_id(shell_cx));
+                                if shell.launcher_page_visible() {
+                                    shell.open_new_tab_modal(&NewTab, window, shell_cx);
+                                } else {
+                                    shell.open_sidebar_chat_modal(scope, window, shell_cx);
+                                }
+                            });
+                        }
+                    })
+                }
+                WorkspaceEntry::Role => workspace_row(
+                    "workspace-role",
+                    "user.svg",
+                    crate::i18n::text("noun.role"),
+                    active,
+                    true,
+                    {
                         let shell = self.shell.clone();
-                        let shortcut = keymap::effective_binding(
-                            "new-chat",
-                            &self.app_store.read(cx).settings.keymap_overrides,
-                        )
-                        .map(|combo| keymap::format_combo(&combo));
-                        workspace_new_tab_row(shortcut, true, active, move |window, cx| {
+                        move |window, cx| {
                             if let Some(shell) = shell.upgrade() {
                                 shell.update(cx, |shell, shell_cx| {
-                                    let scope =
-                                        ProjectScope::or_root(shell.active_project_id(shell_cx));
-                                    if shell.launcher_page_visible() {
-                                        shell.open_new_tab_modal(&NewTab, window, shell_cx);
-                                    } else {
-                                        shell.open_sidebar_chat_modal(scope, window, shell_cx);
-                                    }
+                                    shell.open_roles(window, shell_cx)
                                 });
                             }
-                        })
-                    }
-                    WorkspaceEntry::Role => workspace_row(
-                        "workspace-role",
-                        "user.svg",
-                        crate::i18n::text("noun.role"),
-                        active,
-                        true,
-                        {
-                            let shell = self.shell.clone();
-                            move |window, cx| {
-                                if let Some(shell) = shell.upgrade() {
-                                    shell.update(cx, |shell, shell_cx| {
-                                        shell.open_roles(window, shell_cx)
-                                    });
-                                }
+                        }
+                    },
+                ),
+                WorkspaceEntry::Crew => workspace_row(
+                    "workspace-crew",
+                    "users.svg",
+                    crate::i18n::text("noun.crew"),
+                    active,
+                    true,
+                    {
+                        let shell = self.shell.clone();
+                        move |window, cx| {
+                            if let Some(shell) = shell.upgrade() {
+                                shell.update(cx, |shell, shell_cx| {
+                                    shell.open_crews(window, shell_cx)
+                                });
                             }
-                        },
-                    ),
-                    WorkspaceEntry::Crew => workspace_row(
-                        "workspace-crew",
-                        "users.svg",
-                        crate::i18n::text("noun.crew"),
-                        active,
-                        true,
-                        {
-                            let shell = self.shell.clone();
-                            move |window, cx| {
-                                if let Some(shell) = shell.upgrade() {
-                                    shell.update(cx, |shell, shell_cx| {
-                                        shell.open_crews(window, shell_cx)
-                                    });
-                                }
-                            }
-                        },
-                    ),
-                }
-            });
+                        }
+                    },
+                ),
+            }
+        });
         sidebar_contents(
             workspace_rows,
             sidebar_scroll_frame()
@@ -532,15 +503,6 @@ impl Sidebar {
         F: Fn(&mut Sidebar, &mut Context<Sidebar>) + 'static,
         G: Fn(&mut Window, &mut App) + 'static,
     {
-        let project_section = label == crate::i18n::text("heading.projects");
-        let can_add = !self.front_page.is_remote()
-            || if project_section {
-                self.front_page.supports(&["folders", "createProject"])
-            } else {
-                self.front_page.supports(&["catalog", "startChat"])
-                    || self.front_page.supports(&["startShell", "layout"])
-            };
-        let root = cx.weak_entity();
         sidebar_section_header(
             format!("toggle-{label}").into(),
             label,
@@ -550,39 +512,12 @@ impl Sidebar {
                 .items_center()
                 .gap(rems(6. / 16.))
                 .children(attention)
-                .children(can_add.then(|| {
-                    let button =
-                        IconButton::new(SharedString::from(format!("add-{label}")), "plus.svg")
-                            .size(IconButtonSize::Sm)
-                            .tooltip(plus_title)
-                            .on_press(on_plus)
-                            .into_any_element();
-                    if self.front_page.is_remote() && project_section {
-                        div()
-                            .debug_selector(|| "SIDEBAR_NEW_PROJECT".into())
-                            .relative()
-                            .flex_none()
-                            .child(button)
-                            .child(
-                                gpui::canvas(
-                                    move |bounds, _, cx| {
-                                        let root = root.clone();
-                                        cx.defer(move |cx| {
-                                            let _ = root.update(cx, |sidebar, _| {
-                                                sidebar.project_anchor = Some(bounds)
-                                            });
-                                        });
-                                    },
-                                    |_, _, _, _| {},
-                                )
-                                .absolute()
-                                .inset_0(),
-                            )
-                            .into_any_element()
-                    } else {
-                        button
-                    }
-                }))
+                .child(
+                    IconButton::new(SharedString::from(format!("add-{label}")), "plus.svg")
+                        .size(IconButtonSize::Sm)
+                        .tooltip(plus_title)
+                        .on_press(on_plus),
+                )
                 .into_any_element(),
             cx.listener(move |this, _, _, cx| on_toggle(this, cx)),
         )

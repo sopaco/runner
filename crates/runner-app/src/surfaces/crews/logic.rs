@@ -671,10 +671,6 @@ impl CrewColumn {
 /// The columns a table this wide shows beside Crew: a narrow table drops
 /// Missions first, then Runtimes, then Last mission.
 pub(super) fn crew_table_columns(table_width: f32) -> Vec<CrewColumn> {
-    crew_table_columns_with_history(table_width, true)
-}
-
-pub(super) fn crew_table_columns_with_history(table_width: f32, history: bool) -> Vec<CrewColumn> {
     const PRIORITY: [CrewColumn; 3] = [
         CrewColumn::LastMission,
         CrewColumn::Runtimes,
@@ -684,9 +680,6 @@ pub(super) fn crew_table_columns_with_history(table_width: f32, history: bool) -
         table_width - 2. * CREW_ROW_PADDING_X - CREW_CELL_MIN_WIDTH - CREW_ROW_ACTIONS_WIDTH;
     let mut shown = Vec::new();
     for column in PRIORITY {
-        if !history && column != CrewColumn::Runtimes {
-            continue;
-        }
         if column.width() > budget {
             break;
         }

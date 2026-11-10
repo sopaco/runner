@@ -548,25 +548,6 @@ pub fn clamp_mission_rail_width(value: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn saved_local_only_and_legacy_remote_keys_are_ignored_and_dropped() {
-        for key in ["localOnly", "remoteAccessEnabled", "remote_access_enabled"] {
-            let temp = tempfile::tempdir().unwrap();
-            let path = temp.path().join("settings.json");
-            std::fs::write(
-                &path,
-                serde_json::json!({(key):true,"appZoom":1.2}).to_string(),
-            )
-            .unwrap();
-            let settings = super::AppSettings::load(&path).unwrap();
-            assert_eq!(settings.app_zoom, 1.2);
-            settings.save(&path).unwrap();
-            let saved: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-            assert!(saved.get(key).is_none());
-        }
-    }
-
     use super::*;
 
     #[test]

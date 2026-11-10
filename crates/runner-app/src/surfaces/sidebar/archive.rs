@@ -1,4 +1,3 @@
-use crate::surfaces::front_page::actions::WorkspaceAction;
 use runner_core::protocol::model::Runtime;
 
 use super::*;
@@ -130,12 +129,6 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.remote_client.is_active() {
-            let session_ids = self.remote_client.archive_targets(session_ids);
-            self.request_archive_all(None, session_ids, ArchiveAllSource::Chat, window, cx);
-            return;
-        }
-
         let chat_count = session_ids.len();
         let session_ids = archive_targets_for_chats(session_ids, self.tabs.tabs());
         if session_ids.len() > chat_count {
@@ -169,44 +162,29 @@ impl NativeRoot {
         {
             return;
         }
-        let remote = self.front_page_client(cx).is_remote();
         let error_target = match source {
             ArchiveAllSource::Chat => ArchiveErrorTarget::Chat,
             ArchiveAllSource::Sidebar => ArchiveErrorTarget::App,
         };
-        let local_plan = if !remote {
-            if let (Some(id), Some(close)) = (session_ids.first(), pane_close.clone()) {
-                self.pending_pane_closes.insert(id.clone(), close);
-            }
-            let active = self.active_focused_session_id();
-            self.prepare_tab_close(&session_ids, cx);
-            let Some(plan) = self.sidebar.update(cx, |sidebar, cx| {
-                sidebar.prepare_archive_sessions(&session_ids, active.as_deref(), cx)
-            }) else {
-                return;
-            };
-            Some(plan)
-        } else {
-            None
-        };
-        let pending_ids = local_plan
-            .as_ref()
-            .map(|plan| plan.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>())
-            .unwrap_or_default();
-        let Some((action, operation)) =
-            WorkspaceAction::archive(self, session_ids, local_plan, pane_close, cx)
-        else {
+        if let (Some(id), Some(close)) = (session_ids.first(), pane_close.clone()) {
+            self.pending_pane_closes.insert(id.clone(), close);
+        }
+        let active = self.active_focused_session_id();
+        self.prepare_tab_close(&session_ids, cx);
+        let Some(plan) = self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.prepare_archive_sessions(&session_ids, active.as_deref(), cx)
+        }) else {
             return;
         };
-        let task = cx.background_spawn(async move { operation() });
+        let pending_ids = plan.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+        let client = self.front_page_client(cx);
+        let task = cx.background_spawn(async move {
+            let (removed, error) = client.archive_sessions(plan);
+            Ok(crate::surfaces::front_page::actions::ArchiveOperation { removed, error })
+        });
         cx.spawn_in(window, async move |weak, cx| {
             let result = task.await;
             let _ = weak.update_in(cx, |root, window, cx| {
-                let Some(result) =
-                    WorkspaceAction::complete(root, action, result, |done| done.completion, cx)
-                else {
-                    return;
-                };
                 root.sidebar.update(cx, |sidebar, cx| {
                     for id in &pending_ids {
                         sidebar.archiving_sessions.remove(id);
@@ -276,11 +254,6 @@ impl NativeRoot {
         }
         let pane_closes =
             take_pending_pane_closes(&mut self.pending_pane_closes, &attempted, &removed);
-        if self.remote_client.is_active() {
-            self.clear_pending_tab_close(&attempted);
-            cx.notify();
-            return;
-        }
         let refresh_result = (|| -> Result<()> {
             self.refresh_sessions(cx);
             self.reload_tabs(cx)?;

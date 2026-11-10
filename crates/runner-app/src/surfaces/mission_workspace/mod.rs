@@ -6,9 +6,6 @@ mod events;
 mod feed;
 mod input;
 mod rail;
-mod remote;
-#[cfg(test)]
-mod remote_tests;
 mod routing;
 mod state;
 mod terminal_pane;
@@ -329,7 +326,6 @@ struct DeliveryBlocked {
 pub(crate) struct MissionWorkspace {
     pub(super) render_regions: HashMap<String, Entity<super::render_cache::CachedRegion<Self>>>,
     client: super::front_page::FrontPageClient,
-    presentation: remote::MissionPresentation,
     window_label: String,
     shell: WeakEntity<NativeRoot>,
     app_store: Entity<AppStore>,

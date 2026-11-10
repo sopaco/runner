@@ -1,6 +1,4 @@
 use super::*;
-use crate::surfaces::remote_client::RemoteItem;
-use runner_core::companion::Catalog;
 use runner_core::protocol::crew::CrewListItem;
 use runner_core::protocol::model::SlotWithRole;
 
@@ -13,7 +11,6 @@ pub(crate) enum LauncherOrigin {
         route: AppRoute,
         tab: Option<String>,
     },
-    Remote(Option<RemoteItem>),
 }
 
 struct MissionRequest {
@@ -37,33 +34,6 @@ pub(super) fn local_crews(crews: &[CrewListItem]) -> Vec<CrewEntry> {
                 .collect(),
             roles: usize::try_from(item.role_count).unwrap_or_default(),
             slots: None,
-        })
-        .collect()
-}
-
-pub(super) fn host_crews(catalog: &Catalog) -> Vec<CrewEntry> {
-    catalog
-        .crews
-        .iter()
-        .map(|crew| CrewEntry {
-            id: crew.id.clone(),
-            name: crew.name.clone(),
-            handles: crew.slots.iter().map(|slot| slot.handle.clone()).collect(),
-            roles: crew.slots.len(),
-            slots: Some(
-                crew.slots
-                    .iter()
-                    .map(|slot| {
-                        let role = catalog.roles.iter().find(|role| role.id == slot.role);
-                        SlotLine {
-                            handle: slot.handle.clone(),
-                            role: role.map(|role| role.name.clone()).unwrap_or_default(),
-                            // The catalog does not export slot overrides.
-                            setup: String::new(),
-                        }
-                    })
-                    .collect(),
-            ),
         })
         .collect()
 }
@@ -131,10 +101,10 @@ impl Row {
     }
 }
 
-pub(crate) fn record_launcher_crew(directory: &Path, target: &FrontPageTarget, crew: String) {
+pub(crate) fn record_launcher_crew(directory: &Path, crew: String) {
     let _writer = RECENT_WRITER.lock().unwrap();
     let mut store = RecentStore::load(directory);
-    store.record_crew(&computer_key(target), crew, chrono::Utc::now().timestamp());
+    store.record_crew(computer_key(), crew, chrono::Utc::now().timestamp());
     match store.save(directory) {
         Ok(()) => {
             RECENT_REVISION.fetch_add(1, std::sync::atomic::Ordering::Release);
@@ -147,15 +117,15 @@ impl ChatLauncher {
     /// Whether this launcher starts missions: only a tab's own page can,
     /// since a mission takes the whole tab.
     pub(super) fn offers_missions(&self) -> bool {
-        self.default_page && self.client.supports(&["catalog", "startMission"])
+        self.default_page
     }
 
     pub(super) fn offers_empty_missions(&self) -> bool {
-        self.offers_missions() && !self.client.is_remote()
+        self.offers_missions()
     }
 
     pub(super) fn crew_rows(&self, cx: &App) -> Vec<Row> {
-        let recent = self.recents.crews(&computer_key(&self.client.target));
+        let recent = self.recents.crews(computer_key());
         let mut rows = model::ranked_crews(&self.crews, recent, self.query.read(cx).text())
             .into_iter()
             .map(|crew| crew_row(crew, None))
@@ -171,7 +141,7 @@ impl ChatLauncher {
     }
 
     pub(super) fn typed_crew_rows(&self, query: &str, _cx: &App) -> Vec<Row> {
-        let recent = self.recents.crews(&computer_key(&self.client.target));
+        let recent = self.recents.crews(computer_key());
         model::ranked_crews(&self.crews, recent, query)
             .into_iter()
             .map(|crew| crew_row(crew, Some(crate::i18n::text("launcher.crew"))))
@@ -208,7 +178,7 @@ impl ChatLauncher {
         let Step::Goal(Some(id)) = &self.step else {
             return;
         };
-        if self.loading || self.slots.is_some() {
+        if self.slots.is_some() {
             return;
         }
         match self.crews.iter().find(|crew| &crew.id == id) {
@@ -286,13 +256,7 @@ impl ChatLauncher {
             return;
         };
         window.defer(cx, move |window, cx| {
-            root.update(cx, |root, cx| {
-                if root.remote_client.is_active() {
-                    root.open_crews(window, cx);
-                } else {
-                    root.open_crew_editor(id, window, cx);
-                }
-            });
+            root.update(cx, |root, cx| root.open_crew_editor(id, window, cx));
         });
     }
 
@@ -300,12 +264,7 @@ impl ChatLauncher {
         let Step::Goal(crew) = self.step.clone() else {
             return;
         };
-        if self.pending.is_some()
-            || self.loading
-            || !self.client.valid()
-            || !self.client.supports(&["catalog", "startMission"])
-            || (crew.is_none() && !self.offers_empty_missions())
-        {
+        if self.pending.is_some() || (crew.is_none() && !self.offers_empty_missions()) {
             return;
         }
         let crew_name = match &crew {
@@ -562,7 +521,7 @@ impl ChatLauncher {
                     .size(runner_app::ui::ButtonSize::Compact)
                     .shortcut("↵")
                     .loading(starting)
-                    .disabled(starting || self.loading)
+                    .disabled(starting)
                     .on_press(move |window, cx| {
                         launcher.update(cx, |launcher, cx| launcher.start_mission(window, cx))
                     }),
@@ -581,19 +540,9 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self
-            .front_page_client(cx)
-            .supports(&["catalog", "startMission"])
-        {
-            return;
-        }
         let step = crew.map_or(Step::Crews, |id| Step::Goal(Some(id)));
         if self.launcher_page_visible() {
-            if self.remote_client.is_active() {
-                self.select_remote_item(RemoteItem::Launcher, cx);
-            } else {
-                self.set_route(AppRoute::Launcher, cx);
-            }
+            self.set_route(AppRoute::Launcher, cx);
             let launcher = self.render_launcher(None, true, window, cx);
             launcher.update(cx, |launcher, cx| launcher.open_step(step, window, cx));
         } else {
@@ -629,8 +578,6 @@ impl NativeRoot {
                 ..
             } => self.enter_settings_route(None, window, cx),
             LauncherOrigin::Local { route, .. } => self.open_page_route(route, window, cx),
-            LauncherOrigin::Remote(Some(item)) => self.select_remote_item(item, cx),
-            LauncherOrigin::Remote(None) => {}
         }
         cx.notify();
     }
@@ -642,38 +589,10 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let release = |launcher: &Entity<ChatLauncher>, cx: &mut App| {
-            launcher.update(cx, |launcher, cx| {
-                launcher.pending = None;
-                cx.notify();
-            });
-        };
         let client = launcher.read(cx).client.clone();
-        if client.target != self.front_page_client(cx).target || !client.valid() {
-            return release(&launcher, cx);
-        }
-        let remote_form = if client.is_remote() {
-            match self.remote_client.begin_mission_form() {
-                Some((form, navigation, generation)) if form.target == client.target => {
-                    Some((navigation, generation))
-                }
-                _ => return release(&launcher, cx),
-            }
-        } else {
-            None
-        };
-        let size = if let Some(workspace) = self.remote_client.mission_workspace() {
-            let size = workspace
-                .read(cx)
-                .estimated_mission_terminal_size(window, cx);
-            (size.0.max(20), size.1.max(8))
-        } else {
-            self.estimated_mission_terminal_size(window, cx)
-        };
+        let size = self.estimated_mission_terminal_size(window, cx);
         let directory = self.app_store.read(cx).app_data_dir.clone();
         let scope = ProjectScope::or_root(request.project.clone());
-        let target = client.target.clone();
-        let recent_target = target.clone();
         let task = cx.background_spawn(async move {
             let crew = request.crew.clone();
             let result = client
@@ -687,54 +606,23 @@ impl NativeRoot {
                 )
                 .map_err(|error| error.to_string());
             if result.is_ok() && !crew.is_empty() {
-                record_launcher_crew(&directory, &recent_target, crew);
+                record_launcher_crew(&directory, crew);
             }
             result
         });
         cx.spawn_in(window, async move |weak, cx| {
             let result = task.await;
             let _ = weak.update_in(cx, |root, window, cx| {
-                if let Some((navigation, form)) = remote_form {
-                    if !root
-                        .remote_client
-                        .mission_form_current(&target, navigation, form)
-                    {
-                        return release(&launcher, cx);
-                    }
-                }
                 match result {
                     Ok(mission) => {
-                        if root.front_page_client(cx).target == target {
-                            root.reveal_started_scope(&scope, cx);
-                        }
+                        root.reveal_started_scope(&scope, cx);
                         root.launchers.retain(|_, cached| cached != &launcher);
-                        if remote_form.is_some() {
-                            root.remote_client.activate_mission(mission);
-                            root.sync_remote_state(cx);
-                        } else {
-                            root.refresh_store(StoreRefreshKind::All, cx);
-                            root.open_mission(mission, window, cx);
-                        }
+                        root.refresh_store(StoreRefreshKind::All, cx);
+                        root.open_mission(mission, window, cx);
                     }
                     Err(error) => {
-                        let folder_error = remote_form
-                            .and_then(|_| root.remote_client.computer())
-                            .map(|computer| computer.name.clone())
-                            .filter(|_| error == "Choose an accessible folder on the host.");
                         launcher.update(cx, |launcher, cx| {
                             launcher.pending = None;
-                            if let (Some(computer), Some(picker)) =
-                                (folder_error, launcher.folder_picker.clone())
-                            {
-                                picker.update(cx, |picker, cx| {
-                                    picker.path_error =
-                                        Some(crate::surfaces::remote_client::label(
-                                            "client.folder_invalid",
-                                            &computer,
-                                        ));
-                                    cx.notify();
-                                });
-                            }
                             launcher.error = Some(error);
                             cx.notify();
                         });
@@ -798,11 +686,7 @@ mod tests {
     fn active_launcher(root: &NativeRoot, cx: &App) -> Entity<ChatLauncher> {
         root.launchers
             .values()
-            .find(|launcher| {
-                let launcher = launcher.read(cx);
-                launcher.pane.is_none()
-                    && launcher.client.target == root.front_page_client(cx).target
-            })
+            .find(|launcher| launcher.read(cx).pane.is_none())
             .cloned()
             .expect("the launcher page")
     }
@@ -1065,7 +949,7 @@ mod tests {
                         root.finish_local_chat_launch(
                             Some("started-chat".into()),
                             Ok(crate::surfaces::front_page::client::ChatLaunched {
-                                session: "started-chat".into(), layout: None,
+                                session: "started-chat".into(),
                             }),
                             window, cx,
                         );
@@ -1390,310 +1274,5 @@ mod tests {
             assert_eq!(step(root, cx), Step::Start, "the chip's × goes home");
             assert!(root.tabs.tabs().is_empty());
         });
-    }
-}
-
-#[cfg(test)]
-mod remote_tests {
-    use super::*;
-    use crate::surfaces::remote_client::tests::{
-        self as remote_test, action_trace, add_window, choose_host, Fake,
-    };
-    use gpui::{TestAppContext, VisualTestContext};
-    use std::sync::Arc;
-
-    fn catalog() -> serde_json::Value {
-        serde_json::json!({"roles":[{"id":"host-role","name":"Host coder","handle":"host-coder","runtime":"codex","model":"host-model","effort":"high","speed":null}],"runtimes":[{"name":"codex","label":"Codex","available":true,"nativeFork":true,"defaultModel":null,"defaultEffort":null,"models":[],"efforts":[],"speeds":[]}],"accounts":[],"activeAccount":"","crews":[{"id":"empty-host-crew","name":"Empty host crew","slots":[]},{"id":"host-crew","name":"Host duo","slots":[{"handle":"lead","role":"host-role","lead":true},{"handle":"reviewer","role":"host-role","lead":false}]}],"projects":[{"id":"host-project","name":"Host project","path":"\\\\nas\\share"}],"recentFolders":[]})
-    }
-
-    fn overview() -> runner_core::companion::Overview {
-        serde_json::from_value(serde_json::json!({"projects":[{"id":"host-project","name":"Host project"}],"tabs":[{"id":"first","project":null,"name":"First","pinned":false,"panes":{"session":null},"shells":[]}],"missions":[],"sessions":{}})).unwrap()
-    }
-
-    fn setup(
-        features: Option<&[&str]>,
-    ) -> (
-        tempfile::TempDir,
-        TestAppContext,
-        gpui::WindowHandle<NativeRoot>,
-        Arc<Fake>,
-    ) {
-        let temp = tempfile::tempdir().unwrap();
-        let mut cx = TestAppContext::single();
-        let (store, fake, _) = remote_test::fixture(&mut cx, temp.path());
-        remote_test::enable_missions(&fake);
-        if let Some(features) = features {
-            fake.set_features(features);
-        }
-        fake.set_overview(overview());
-        let window = add_window(&mut cx, &store, temp.path(), "host-mission-launcher");
-        window.update(&mut cx, choose_host).unwrap();
-        cx.run_until_parked();
-        window
-            .update(&mut cx, |root, _, cx| {
-                root.select_remote_item(RemoteItem::Tab("first".into()), cx)
-            })
-            .unwrap();
-        cx.run_until_parked();
-        (temp, cx, window, fake)
-    }
-
-    fn launcher(
-        root: &mut NativeRoot,
-        window: &mut Window,
-        cx: &mut Context<NativeRoot>,
-    ) -> Entity<ChatLauncher> {
-        root.render_launcher(None, true, window, cx)
-    }
-
-    #[test]
-    fn the_crew_step_lists_the_hosts_crews_and_starts_the_mission_there() {
-        let _theme = crate::theme_snapshot::ThemeGuard::new();
-        let (_temp, mut cx, window, fake) = setup(None);
-        fake.queue_result("catalog", Ok(catalog()));
-        window
-            .update(&mut cx, |root, window, cx| {
-                root.new_mission_action(&NewMission, window, cx)
-            })
-            .unwrap();
-        cx.run_until_parked();
-        let view = window
-            .update(&mut cx, |root, window, cx| {
-                root.new_mission_action(&NewMission, window, cx);
-                let view = launcher(root, window, cx);
-                assert!(view
-                    .read(cx)
-                    .crews
-                    .iter()
-                    .flat_map(|crew| crew.slots.iter().flatten())
-                    .all(|slot| slot.setup.is_empty()));
-                let rows = view.read(cx).rows(cx).0;
-                let choices = rows
-                    .iter()
-                    .map(|row| row.choice.clone())
-                    .collect::<Vec<_>>();
-                assert_eq!(
-                    choices,
-                    [
-                        Choice::Crew("empty-host-crew".into()),
-                        Choice::Crew("host-crew".into()),
-                    ]
-                );
-                assert!(rows[0].dimmed);
-                assert!(!rows[1].dimmed);
-                view.update(cx, |launcher, cx| {
-                    launcher.choose_project("host-project", cx);
-                    launcher.start(Choice::Crew("host-crew".into()), false, window, cx);
-                    launcher.goal.update(cx, |goal, cx| {
-                        goal.set_text("\nShip the host change\nthen review", cx)
-                    });
-                });
-                view
-            })
-            .unwrap();
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), &cx);
-        assert!(visual.debug_bounds("LAUNCHER_SLOT lead").is_some());
-        assert!(visual.debug_bounds("LAUNCHER_SLOT reviewer").is_some());
-        let mut size = (0, 0);
-        window
-            .update(&mut visual, |root, window, cx| {
-                size = root
-                    .remote_client
-                    .workspace()
-                    .unwrap()
-                    .mission_workspace
-                    .read(cx)
-                    .estimated_mission_terminal_size(window, cx);
-                view.update(cx, |launcher, cx| launcher.start_mission(window, cx));
-            })
-            .unwrap();
-        visual.run_until_parked();
-        let starts = action_trace(&fake, "startMission");
-        assert_eq!(starts.len(), 1);
-        let request = &starts[0];
-        assert_eq!(request["crew"], "host-crew");
-        assert_eq!(request["title"], "Ship the host change");
-        assert_eq!(request["goal"], "Ship the host change\nthen review");
-        assert_eq!(request["project"], "host-project");
-        assert_eq!(request["cwd"], r"\\nas\share");
-        assert_eq!(request["cols"], size.0.max(20));
-        assert_eq!(request["rows"], size.1.max(8));
-        assert!(action_trace(&fake, "archive").is_empty());
-        assert!(action_trace(&fake, "layout").is_empty());
-        window
-            .read_with(&visual, |root, _| {
-                let remote = root.remote_client.workspace().unwrap();
-                assert_eq!(remote.activate_mission.as_deref(), Some("created-mission"));
-            })
-            .unwrap();
-    }
-
-    #[test]
-    fn without_catalog_and_start_mission_no_entry_point_opens_a_launcher() {
-        let _theme = crate::theme_snapshot::ThemeGuard::new();
-        for features in [vec!["catalog", "layout"], vec!["startMission", "layout"]] {
-            let (_temp, mut cx, window, fake) = setup(Some(&features));
-            let layouts = fake.request_count("layout");
-            window
-                .update(&mut cx, |root, window, cx| {
-                    let view = launcher(root, window, cx);
-                    assert!(view
-                        .read(cx)
-                        .rows(cx)
-                        .0
-                        .iter()
-                        .all(|row| row.choice != Choice::Mission));
-                    root.new_mission_action(&NewMission, window, cx);
-                    root.open_mission_launcher(
-                        Some("host-crew".into()),
-                        ProjectScope::Root,
-                        window,
-                        cx,
-                    );
-                    assert!(!root.launcher_page_visible());
-                    assert_eq!(view.read(cx).step, Step::Start);
-                })
-                .unwrap();
-            cx.run_until_parked();
-            assert_eq!(fake.request_count("layout"), layouts);
-            assert_eq!(fake.request_count("startMission"), 0);
-        }
-    }
-
-    #[test]
-    fn remote_empty_missions_are_unavailable_in_rows_keys_and_start_requests() {
-        let _theme = crate::theme_snapshot::ThemeGuard::new();
-        let (_temp, mut cx, window, fake) = setup(None);
-        let view = window
-            .update(&mut cx, |root, window, cx| {
-                root.new_mission_action(&NewMission, window, cx);
-                launcher(root, window, cx)
-            })
-            .unwrap();
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), &cx);
-        visual.simulate_keystrokes("shift-enter");
-        visual.run_until_parked();
-        window
-            .update(&mut visual, |_, window, cx| {
-                view.update(cx, |launcher, cx| {
-                    assert_eq!(launcher.step, Step::Crews);
-                    assert!(launcher
-                        .rows(cx)
-                        .0
-                        .iter()
-                        .all(|row| row.choice != Choice::EmptyMission));
-                    launcher.start(Choice::EmptyMission, false, window, cx);
-                    assert_eq!(launcher.step, Step::Crews);
-                    launcher.open_step(Step::Goal(None), window, cx);
-                    launcher.start_mission(window, cx);
-                    assert!(launcher.pending.is_none());
-                });
-            })
-            .unwrap();
-        visual.run_until_parked();
-        assert_eq!(fake.request_count("startMission"), 0);
-    }
-
-    #[test]
-    fn new_chat_page_sends_only_the_start_request_when_a_chat_is_chosen() {
-        let _theme = crate::theme_snapshot::ThemeGuard::new();
-        let (_temp, mut cx, window, fake) = setup(None);
-        window
-            .update(&mut cx, |root, window, cx| {
-                root.open_new_tab_modal(&NewTab, window, cx)
-            })
-            .unwrap();
-        cx.run_until_parked();
-        assert!(action_trace(&fake, "layout").is_empty());
-        window
-            .update(&mut cx, |root, window, cx| {
-                assert!(root.launcher_page_visible());
-                assert!(root.front_page_layout().is_none());
-                root.front_page_sidebar().update(cx, |sidebar, _| {
-                    let settings = sidebar.remote_settings.as_mut().unwrap();
-                    settings.sidebar_chats_open = false;
-                    settings.sidebar_projects_open = false;
-                });
-                launcher(root, window, cx).update(cx, |launcher, cx| {
-                    launcher.start(
-                        Choice::Chat(EntryKey::Agent("codex".into())),
-                        false,
-                        window,
-                        cx,
-                    )
-                });
-            })
-            .unwrap();
-        cx.run_until_parked();
-        assert_eq!(fake.request_count("startChat"), 1);
-        assert!(action_trace(&fake, "layout").is_empty());
-        assert!(action_trace(&fake, "archive").is_empty());
-        window
-            .read_with(&cx, |root, cx| {
-                assert_eq!(
-                    root.remote_client
-                        .workspace()
-                        .unwrap()
-                        .activate_session
-                        .as_deref(),
-                    Some("started-session")
-                );
-                let sidebar = root.front_page_sidebar();
-                let settings = sidebar.read(cx).remote_settings.as_ref().unwrap();
-                assert!(settings.sidebar_chats_open);
-                assert!(!settings.sidebar_projects_open);
-            })
-            .unwrap();
-    }
-
-    #[test]
-    fn switching_computers_after_showing_the_page_never_creates_or_archives_a_tab() {
-        let _theme = crate::theme_snapshot::ThemeGuard::new();
-        let (_temp, mut cx, window, fake) = setup(None);
-        window
-            .update(&mut cx, |root, window, cx| {
-                root.open_new_tab_modal(&NewTab, window, cx)
-            })
-            .unwrap();
-        cx.run_until_parked();
-        window
-            .update(&mut cx, |root, window, cx| {
-                root.return_to_this_computer(window, cx)
-            })
-            .unwrap();
-        cx.run_until_parked();
-        window.update(&mut cx, choose_host).unwrap();
-        cx.run_until_parked();
-        assert!(action_trace(&fake, "layout").is_empty());
-        assert!(action_trace(&fake, "archive").is_empty());
-    }
-
-    #[test]
-    fn a_host_crew_page_start_shows_the_launcher_page_on_that_crews_goal_step() {
-        let _theme = crate::theme_snapshot::ThemeGuard::new();
-        let (_temp, mut cx, window, fake) = setup(None);
-        fake.queue_result("catalog", Ok(catalog()));
-        window
-            .update(&mut cx, |root, window, cx| root.open_crews(window, cx))
-            .unwrap();
-        cx.run_until_parked();
-        fake.queue_result("catalog", Ok(catalog()));
-        let mut visual = VisualTestContext::from_window(window.into(), &cx);
-        let start = visual.debug_bounds("CREW_ROW_START:host-crew").unwrap();
-        visual.simulate_click(start.center(), Default::default());
-        visual.run_until_parked();
-        window
-            .read_with(&visual, |root, cx| {
-                assert!(matches!(
-                    root.remote_client.active_item(),
-                    Some(RemoteItem::Launcher)
-                ));
-                assert!(root.mission_launcher_open(cx));
-            })
-            .unwrap();
-        assert_eq!(action_trace(&fake, "layout").len(), 0);
-        assert_eq!(fake.request_count("startMission"), 0);
     }
 }

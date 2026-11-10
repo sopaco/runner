@@ -297,7 +297,6 @@ impl SidebarVisibilityTransition {
 
 pub(crate) struct NativeRoot {
     pub(crate) composition: Entity<surfaces::render_cache::ShellComposition>,
-    pub(crate) remote_client: surfaces::remote_client::RemoteClient,
     pub(crate) render_regions: HashMap<String, Entity<surfaces::render_cache::CachedRegion<Self>>>,
     pub(crate) window_label: String,
     pub(crate) log_dir: PathBuf,

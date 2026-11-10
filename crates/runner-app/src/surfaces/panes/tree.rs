@@ -155,15 +155,9 @@ impl NativeRoot {
                     false,
                 )
                 .id(SharedString::from(format!("gutter-{}", split.id)))
-                .when(self.front_page_client(cx).supports(&["layout"]), |gutter| {
-                    gutter.on_drag(drag, |drag: &SplitResizeDrag, _, _, cx: &mut App| {
-                        cx.new(|_| drag.clone())
-                    })
-                })
-                .when(
-                    !self.front_page_client(cx).supports(&["layout"]),
-                    |gutter| gutter.cursor(CursorStyle::Arrow),
-                );
+                .on_drag(drag, |drag: &SplitResizeDrag, _, _, cx: &mut App| {
+                    cx.new(|_| drag.clone())
+                });
                 div()
                     .id(SharedString::from(format!("split-{}", split.id)))
                     .size_full()
@@ -219,9 +213,7 @@ impl NativeRoot {
                                 };
                                 let Some(index) = pane_action_indexes(
                                     &entry,
-                                    &this.front_page_client(cx),
-                                    this.remote_client.is_local()
-                                        && this.cached_chat_secondary_state(&session_id).secondary,
+                                    this.cached_chat_secondary_state(&session_id).secondary,
                                 )
                                 .get(index)
                                 .copied() else {
@@ -258,9 +250,8 @@ impl NativeRoot {
         let resume_shortcut =
             keymap::effective_binding("resume-session", &self.settings(cx).keymap_overrides)
                 .map(|combo| keymap::format_combo(&combo));
-        let secondary =
-            self.remote_client.is_local() && self.cached_chat_secondary_state(session_id).secondary;
-        let indexes = pane_action_indexes(entry, &self.front_page_client(cx), secondary);
+        let secondary = self.cached_chat_secondary_state(session_id).secondary;
+        let indexes = pane_action_indexes(entry, secondary);
         let fork = if let Some(local) = entry.local.as_ref() {
             header_fork_state(Some(local), secondary)
         } else if !entry.native_fork {

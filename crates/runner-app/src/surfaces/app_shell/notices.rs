@@ -65,7 +65,6 @@ impl NativeRoot {
             let icon_color = match toast.tone {
                 ToastTone::Info => theme::muted(),
                 ToastTone::Success | ToastTone::Restart => theme::accent(),
-                ToastTone::Warning => theme::warning(),
                 ToastTone::Error => theme::danger(),
             };
             div()
@@ -85,7 +84,7 @@ impl NativeRoot {
                         .max_w(px(if toast.single_line { 600. } else { 420. } * zoom))
                         .pl(px(14. * zoom))
                         .pr(px(12. * zoom))
-                        .py(px(if toast.open_remote { 8. } else { 10. } * zoom))
+                        .py(px(10. * zoom))
                         .flex()
                         .items_center()
                         .gap(px(10. * zoom))
@@ -127,30 +126,6 @@ impl NativeRoot {
                                 .line_height(px(18. * zoom))
                                 .child(SharedString::from(toast.message.clone())),
                         )
-                        .children(toast.open_remote.then(|| {
-                            div()
-                                .id("toast-open-remote")
-                                .debug_selector(|| "REMOTE_TOAST_ACTION".into())
-                                .tab_index(0)
-                                .text_size(theme::text_body())
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(crate::i18n::text("remote.open_remote"))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.toasts.dismiss();
-                                    this.enter_settings_route(Some("remote"), window, cx);
-                                }))
-                                .on_key_down(cx.listener(
-                                    |this, event: &KeyDownEvent, window, cx| {
-                                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                        {
-                                            cx.stop_propagation();
-                                            this.toasts.dismiss();
-                                            this.enter_settings_route(Some("remote"), window, cx);
-                                        }
-                                    },
-                                ))
-                        }))
                         .child(
                             svg()
                                 .debug_selector(|| "GLOBAL_TOAST_CLOSE".into())

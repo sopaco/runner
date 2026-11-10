@@ -19,20 +19,7 @@ impl NativeRoot {
         });
     }
 
-    #[cfg(test)]
-    pub(crate) fn tab_label(&self, layout: &PaneLayout, cx: &App) -> String {
-        self.tab_label_source(layout, cx).resolve().to_string()
-    }
-
     pub(crate) fn tab_label_source(&self, layout: &PaneLayout, cx: &App) -> crate::i18n::Text {
-        if self.remote_client.is_active() {
-            let sessions = layout
-                .session_ids()
-                .iter()
-                .filter_map(|id| self.front_page_session(id, cx))
-                .collect::<Vec<_>>();
-            return super::elements::tab_label_source(layout, &sessions, |_| None);
-        }
         let store = self.app_store.read(cx);
         let sessions = layout
             .session_ids()
@@ -108,13 +95,6 @@ impl NativeRoot {
     }
 
     pub(crate) fn sync_sidebar_shortcut_rows(&mut self, cx: &mut Context<Self>) {
-        if let Some(sidebar) = self.remote_client.sidebar() {
-            sidebar.update(cx, |sidebar, cx| {
-                sidebar.refresh_shortcut_rows(&TabSet::default(), cx)
-            });
-            return;
-        }
-
         let tabs = &self.tabs;
         self.sidebar.update(cx, |sidebar, sidebar_cx| {
             sidebar.refresh_shortcut_rows(tabs, sidebar_cx)
@@ -122,9 +102,6 @@ impl NativeRoot {
     }
 
     pub(crate) fn mark_active_tab_viewed(&mut self, window: &Window, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() {
-            return;
-        }
         if self.route != AppRoute::Chat {
             self.report_current_subjects(cx);
             return;
@@ -166,11 +143,6 @@ impl NativeRoot {
     /// The project the active tab sits under, which every pane and drawer
     /// shell in it belongs to.
     pub(crate) fn active_tab_project_id(&self, cx: &App) -> Option<String> {
-        if self.remote_client.is_active() {
-            return self
-                .front_page_layout()
-                .and_then(|layout| layout.parent_id.clone());
-        }
         let tab_id = self.tabs.active_tab_id()?;
         let nodes = &self.app_store.read(cx).nodes;
         let node = nodes.iter().find(|node| node.id == tab_id)?;
@@ -219,19 +191,6 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.remote_client.is_active() {
-            self.select_remote_item(
-                crate::surfaces::remote_client::RemoteItem::Tab(tab_id.into()),
-                cx,
-            );
-            if let Some(layout) = self.front_page_layout_mut() {
-                layout.focus_session(session_id);
-            }
-            self.remote_client
-                .focus_remote_terminal(session_id, window, cx);
-            return;
-        }
-
         if !self.tabs.activate(tab_id) {
             return;
         }
@@ -248,16 +207,6 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.remote_client.is_active() {
-            if let Some(tab) = self.remote_client.focus_session_layout(session_id) {
-                self.select_remote_item(crate::surfaces::remote_client::RemoteItem::Tab(tab), cx);
-                self.remote_client
-                    .focus_remote_terminal(session_id, window, cx);
-                return true;
-            }
-            return false;
-        }
-
         let tab_id = self
             .tabs
             .tabs()

@@ -152,9 +152,6 @@ impl Sidebar {
                     pinned: node.pinned_position.is_some(),
                 },
             )
-            .when(self.front_page.is_remote(), |row| {
-                row.debug_selector(|| "REMOTE_SIDEBAR_ROW".into())
-            })
             .when(!live, |row| row.text_color(theme::faint()))
             .child(trailing)
             .on_hover({
@@ -284,9 +281,6 @@ impl Sidebar {
                     pinned: node.pinned_position.is_some(),
                 },
             )
-            .when(self.front_page.is_remote(), |row| {
-                row.debug_selector(|| "REMOTE_SIDEBAR_ROW".into())
-            })
             .child(trailing)
             .on_hover({
                 let id = node.id.clone();
@@ -698,9 +692,6 @@ impl Sidebar {
         visible_ids: Vec<String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if !self.front_page.supports(&["move"]) && !self.front_page.supports(&["reorderPinned"]) {
-            return row;
-        }
         let drag = SidebarNodeDrag::new(node.id.clone(), label, icon);
         let drag_root = cx.entity();
         let hovered_id = node.id.clone();

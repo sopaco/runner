@@ -15,9 +15,6 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
-        if self.remote_client.is_active() {
-            return Ok(());
-        }
         if self.closing {
             return Ok(());
         }
@@ -239,10 +236,6 @@ impl NativeRoot {
     }
 
     pub(crate) fn session_lifecycle_disabled(&self, session_id: &str, cx: &App) -> bool {
-        if self.remote_client.is_active() {
-            return self.remote_client.session_pending(session_id);
-        }
-
         self.stopping_sessions.contains(session_id)
             || self.sidebar_archiving_session(session_id, cx)
             || fork_materializing(&self.forking_sessions, session_id)
@@ -250,12 +243,6 @@ impl NativeRoot {
     }
 
     pub(crate) fn session_is_interactive(&self, session_id: &str, cx: &App) -> bool {
-        if self.remote_client.is_active() {
-            return self
-                .remote_client
-                .remote_terminal_interactive(session_id, cx);
-        }
-
         self.route == AppRoute::Chat
             && !self.tabs.active().is_some_and(|layout| {
                 layout.all_session_ids().iter().any(|id| id == session_id)
@@ -273,12 +260,6 @@ impl NativeRoot {
     }
 
     pub(crate) fn cached_session_is_interactive(&self, session_id: &str, cx: &App) -> bool {
-        if self.remote_client.is_active() {
-            return self
-                .remote_client
-                .remote_terminal_interactive(session_id, cx);
-        }
-
         self.route == AppRoute::Chat
             && !self.tabs.active().is_some_and(|layout| {
                 layout.all_session_ids().iter().any(|id| id == session_id)
@@ -297,15 +278,6 @@ impl NativeRoot {
 
     pub(crate) fn focus_active_terminal(&self, window: &mut Window, cx: &mut App) {
         if self.focus_visible_launcher(window, cx) {
-            return;
-        }
-        if self.remote_client.is_active() {
-            if let Some(id) = self
-                .front_page_layout()
-                .and_then(PaneLayout::focused_session_id)
-            {
-                self.remote_client.focus_remote_terminal(id, window, cx);
-            }
             return;
         }
 
@@ -328,14 +300,6 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.remote_client.is_active() {
-            self.select_remote_item(
-                crate::surfaces::remote_client::RemoteItem::Tab(tab_id.into()),
-                cx,
-            );
-            return;
-        }
-
         if !self.tabs.activate(tab_id) {
             return;
         }
@@ -354,14 +318,6 @@ impl NativeRoot {
     }
 
     pub(crate) fn focus_pane(&mut self, pane_id: &str, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() {
-            if let Some(layout) = self.front_page_layout_mut() {
-                layout.focus_pane(pane_id);
-            }
-            cx.notify();
-            return;
-        }
-
         let role_id = self.tabs.active().and_then(|layout| {
             layout
                 .root
@@ -450,13 +406,6 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.remote_client.is_active() {
-            self.focus_pane(pane_id, cx);
-            self.remote_client
-                .focus_remote_terminal(session_id, window, cx);
-            return;
-        }
-
         self.focus_pane(pane_id, cx);
         self.last_focused_role_id = self
             .session_entry(session_id, cx)
@@ -480,12 +429,6 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.remote_client.is_active() {
-            self.remote_client
-                .focus_remote_terminal(session_id, window, cx);
-            return;
-        }
-
         if self.session_is_interactive(session_id, cx) {
             if let Some(chat) = self.attached.get(session_id) {
                 chat.terminal_focus.focus(window, cx);
@@ -504,34 +447,6 @@ impl NativeRoot {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self
-            .attached
-            .get(session_id)
-            .is_some_and(|chat| !chat.terminal.control().desktop())
-        {
-            cx.stop_propagation();
-            if event.keystroke.key == "enter" && !event.is_held {
-                let group = self
-                    .tabs
-                    .active()
-                    .map(|layout| self.control_tab_session_ids(layout, cx))
-                    .unwrap_or_default();
-                let chats = if self
-                    .tabs
-                    .active()
-                    .is_some_and(|layout| self.tab_control_covered(layout, cx))
-                {
-                    group
-                        .iter()
-                        .filter_map(|id| self.attached.get(id))
-                        .collect::<Vec<_>>()
-                } else {
-                    self.attached.get(session_id).into_iter().collect()
-                };
-                crate::terminal::control::take_back(&chats, cx);
-            }
-            return;
-        }
         if !self.session_is_interactive(session_id, cx) {
             return;
         }
@@ -641,89 +556,50 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let remote = self.front_page_client(cx).is_remote();
-        if !remote && self.chat_secondary_state(session_id, cx).secondary {
+        if self.chat_secondary_state(session_id, cx).secondary {
             return;
         }
-        if !remote && self.chat_transitions.contains_key(session_id) {
+        if self.chat_transitions.contains_key(session_id) {
             return;
         }
         let layout = self.front_page_layout().cloned();
-        if layout.is_none() && !remote {
+        if layout.is_none() {
             self.chat_error = Some(crate::i18n::message("ui.no_active_tab"));
             cx.notify();
             return;
         }
-        let size = if remote {
-            let size = self
-                .remote_client
-                .remote_terminal_size(session_id)
-                .or_else(|| {
-                    layout
-                        .as_ref()
-                        .map(|layout| self.estimated_terminal_size(layout, pane_id, window, cx))
-                })
-                .unwrap_or((INITIAL_COLS, INITIAL_ROWS));
-            (size.0.max(20), size.1.max(8))
-        } else {
-            self.attached
-                .get(session_id)
-                .map(|chat| chat.terminal.size())
-                .unwrap_or_else(|| {
-                    self.estimated_terminal_size(layout.as_ref().unwrap(), pane_id, window, cx)
-                })
-        };
-        if !remote {
-            self.begin_chat_transition(
-                session_id,
-                chat_lifecycle::TransitionKind::Resuming,
-                None,
-                window,
-                cx,
-            );
-            self.chat_error = None;
-            self.app_store.update(cx, |store, store_cx| {
-                store.remove_session_activity(session_id, store_cx)
+        let size = self
+            .attached
+            .get(session_id)
+            .map(|chat| chat.terminal.size())
+            .unwrap_or_else(|| {
+                self.estimated_terminal_size(layout.as_ref().unwrap(), pane_id, window, cx)
             });
-            self.session_exit_codes.remove(session_id);
-        }
-        let Some(operation) =
-            WorkspaceAction::prepare(self, format!("session:{session_id}"), &["resume"], cx)
-        else {
-            return;
-        };
-        let core = operation.client.clone();
+        self.begin_chat_transition(
+            session_id,
+            chat_lifecycle::TransitionKind::Resuming,
+            None,
+            window,
+            cx,
+        );
+        self.chat_error = None;
+        self.app_store.update(cx, |store, store_cx| {
+            store.remove_session_activity(session_id, store_cx)
+        });
+        self.session_exit_codes.remove(session_id);
+        let core = self.front_page_client(cx);
         let target = session_id.to_owned();
         let resume_target = target.clone();
         let resume = cx.background_spawn(async move {
             core.resume(&resume_target, size)
                 .map_err(|error| error.to_string())
         });
-        let origin_epoch = self.remote_client.ui.epoch;
         cx.spawn_in(window, async move |weak, cx| {
             let result = resume.await;
             let _ = weak.update_in(cx, |this, window, cx| {
-                let Some(result) = WorkspaceAction::complete(
-                    this,
-                    operation,
-                    result,
-                    |session| crate::surfaces::front_page::actions::Completion {
-                        session: Some(session),
-                        ..Default::default()
-                    },
-                    cx,
-                ) else {
-                    return;
-                };
-                let result = result.map(drop);
                 let layout = layout.as_ref().unwrap();
-                if this.remote_client.ui.epoch != origin_epoch {
-                    this.chat_transitions.remove(&target);
-                    cx.notify();
-                    return;
-                }
                 match result {
-                    Ok(()) => {
+                    Ok(_) => {
                         this.refresh_sessions(cx);
                         if let Err(error) = this.ensure_attached(layout, &target, window, cx) {
                             this.chat_transitions.remove(&target);
@@ -766,76 +642,42 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let remote = self.front_page_client(cx).is_remote();
-        if !remote && self.chat_transitions.contains_key(session_id) {
+        if self.chat_transitions.contains_key(session_id) {
             return;
         }
         let layout = self.front_page_layout().cloned();
-        if layout.is_none() && !remote {
+        if layout.is_none() {
             return;
         }
-        let size = if remote {
-            let size = self
-                .remote_client
-                .remote_terminal_size(session_id)
-                .unwrap_or((INITIAL_COLS, INITIAL_ROWS));
-            (size.0.max(20), size.1.max(8))
-        } else {
-            self.attached
-                .get(session_id)
-                .map(|chat| chat.terminal.size())
-                .unwrap_or_else(|| {
-                    self.estimated_drawer_terminal_size(layout.as_ref().unwrap(), window, cx)
-                })
-        };
-        if !remote {
-            self.begin_chat_transition(
-                session_id,
-                chat_lifecycle::TransitionKind::Resuming,
-                None,
-                window,
-                cx,
-            );
-            self.chat_error = None;
-            self.session_exit_codes.remove(session_id);
-        }
-        let Some(operation) =
-            WorkspaceAction::prepare(self, format!("session:{session_id}"), &["resume"], cx)
-        else {
-            return;
-        };
-        let core = operation.client.clone();
+        let size = self
+            .attached
+            .get(session_id)
+            .map(|chat| chat.terminal.size())
+            .unwrap_or_else(|| {
+                self.estimated_drawer_terminal_size(layout.as_ref().unwrap(), window, cx)
+            });
+        self.begin_chat_transition(
+            session_id,
+            chat_lifecycle::TransitionKind::Resuming,
+            None,
+            window,
+            cx,
+        );
+        self.chat_error = None;
+        self.session_exit_codes.remove(session_id);
+        let core = self.front_page_client(cx);
         let target = session_id.to_owned();
         let resume_target = target.clone();
         let resume = cx.background_spawn(async move {
             core.resume_session(&resume_target, size, launch_claim)
                 .map_err(|error| error.to_string())
         });
-        let origin_epoch = self.remote_client.ui.epoch;
         cx.spawn_in(window, async move |weak, cx| {
             let result = resume.await;
             let _ = weak.update_in(cx, |this, window, cx| {
-                let Some(result) = WorkspaceAction::complete(
-                    this,
-                    operation,
-                    result,
-                    |session| crate::surfaces::front_page::actions::Completion {
-                        session: Some(session),
-                        ..Default::default()
-                    },
-                    cx,
-                ) else {
-                    return;
-                };
-                let result = result.map(drop);
                 let layout = layout.as_ref().unwrap();
-                if this.remote_client.ui.epoch != origin_epoch {
-                    this.chat_transitions.remove(&target);
-                    cx.notify();
-                    return;
-                }
                 match result {
-                    Ok(()) => {
+                    Ok(_) => {
                         this.refresh_sessions(cx);
                         if let Err(error) = this.ensure_attached(layout, &target, window, cx) {
                             this.chat_transitions.remove(&target);

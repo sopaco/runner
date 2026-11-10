@@ -765,7 +765,7 @@ fn bar_button(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::terminal::control::tests::{attached, mirror_named};
+    use crate::terminal::tests::{attached, mirror_named};
     use crate::AttachedChat;
     use alacritty_terminal::index::{Column, Point, Side};
     use alacritty_terminal::selection::SelectionType;
@@ -839,7 +839,7 @@ pub(crate) mod tests {
         cx.update(|cx| crate::keymap::install_bindings(cx, &Default::default(), false));
         let chat_terminal = terminal.clone();
         let window = cx.add_window(move |_, cx| Host {
-            chat: attached(chat_terminal, cx, 80, 24),
+            chat: attached(chat_terminal, cx),
         });
         let (find, focus) = window
             .read_with(&cx, |host, _| {
@@ -1085,7 +1085,7 @@ pub(crate) mod tests {
             setup_in(TestAppContext::single(), Some(temp.path()));
         open_with(&mut visual, "FAIL");
         assert_eq!(count(&mut visual, &find).as_deref(), Some("1 of 2"));
-        crate::terminal::control::tests::change(&tx, &ack, 2, TerminalController::Desktop);
+        crate::terminal::tests::change(&tx, &ack, 2, TerminalController::Desktop);
         assert_eq!(terminal.size(), (91, 31));
         assert!(visual.update(|_, cx| find.read(cx).current_now()).is_none());
         visual.update(|_, cx| {
@@ -1235,7 +1235,7 @@ pub(crate) mod tests {
         cx.update(|cx| crate::keymap::install_bindings(cx, &Default::default(), false));
         let chat_terminal = terminal.clone();
         let window = cx.add_window(move |_, cx| SizedHost {
-            chat: attached(chat_terminal, cx, 80, 24),
+            chat: attached(chat_terminal, cx),
             width,
         });
         let (find, focus) = window
@@ -1334,11 +1334,8 @@ pub(crate) mod tests {
                 }
             })
         };
-        let (_host, mirror, _tx, _ack) = crate::terminal::control::tests::mirror_waking(
-            "find",
-            TerminalController::Desktop,
-            waker,
-        );
+        let (_host, mirror, _tx, _ack) =
+            crate::terminal::tests::mirror_waking("find", TerminalController::Desktop, waker);
         target.set(Arc::downgrade(&mirror)).unwrap();
         (mirror, armed)
     }
@@ -1388,7 +1385,7 @@ pub(crate) mod tests {
         cx.update(|cx| crate::keymap::install_bindings(cx, &Default::default(), false));
         let chat_terminal = terminal.clone();
         let window = cx.add_window(move |_, cx| DroppableHost {
-            chat: Some(attached(chat_terminal, cx, 80, 24)),
+            chat: Some(attached(chat_terminal, cx)),
         });
         let (find, focus) = window
             .read_with(&cx, |host, _| {

@@ -68,13 +68,11 @@ enum CommandInstallActivity {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum SettingsPane {
-    Account,
     #[default]
     General,
     Missions,
     Appearance,
     Notifications,
-    Remote,
     Terminal,
     Shortcuts,
     Agents,
@@ -89,10 +87,8 @@ pub(crate) enum SettingsPane {
 impl SettingsPane {
     fn from_route(value: Option<&str>) -> Self {
         match value {
-            Some("account") => Self::Account,
             Some("missions") => Self::Missions,
             Some("appearance") => Self::Appearance,
-            Some("remote") => Self::Remote,
             Some("notifications") => Self::Notifications,
             Some("terminal") => Self::Terminal,
             Some("shortcuts") => Self::Shortcuts,
@@ -109,11 +105,9 @@ impl SettingsPane {
 
     fn key(self) -> &'static str {
         match self {
-            Self::Account => "account",
             Self::General => "general",
             Self::Missions => "missions",
             Self::Appearance => "appearance",
-            Self::Remote => "remote",
             Self::Notifications => "notifications",
             Self::Terminal => "terminal",
             Self::Shortcuts => "shortcuts",
@@ -129,11 +123,9 @@ impl SettingsPane {
 
     fn label(self) -> &'static str {
         match self {
-            Self::Account => crate::i18n::text("account.title"),
             Self::General => crate::i18n::text("ui.general"),
             Self::Missions => crate::i18n::text("ui.missions"),
             Self::Appearance => crate::i18n::text("ui.appearance"),
-            Self::Remote => crate::i18n::text("ui.remote_access"),
             Self::Notifications => crate::i18n::text("ui.notifications"),
             Self::Terminal => crate::i18n::text("ui.terminal"),
             Self::Shortcuts => crate::i18n::text("ui.keyboard_shortcuts"),
@@ -149,11 +141,9 @@ impl SettingsPane {
 
     fn icon(self) -> &'static str {
         match self {
-            Self::Account => "user-round.svg",
             Self::General => "settings.svg",
             Self::Missions => "rocket.svg",
             Self::Appearance => "sun.svg",
-            Self::Remote => "globe.svg",
             Self::Notifications => "bell.svg",
             Self::Terminal => "terminal.svg",
             Self::Shortcuts => "keyboard.svg",
@@ -184,8 +174,6 @@ const INTEGRATION_PANES: &[SettingsPane] = &[
     SettingsPane::Mcp,
 ];
 
-const CLOUD_PANES: &[SettingsPane] = &[SettingsPane::Account, SettingsPane::Remote];
-
 const SYSTEM_PANES: &[SettingsPane] = &[
     SettingsPane::Updates,
     SettingsPane::Diagnostics,
@@ -195,7 +183,6 @@ const SYSTEM_PANES: &[SettingsPane] = &[
 const NAV_GROUPS: &[(&str, &[SettingsPane])] = &[
     ("ui.app", APP_PANES),
     ("ui.integrations", INTEGRATION_PANES),
-    ("ui.cloud", CLOUD_PANES),
     ("ui.system", SYSTEM_PANES),
 ];
 
@@ -240,7 +227,6 @@ enum SettingsSelection {
 }
 
 pub(crate) struct SettingsState {
-    pub(crate) remote: settings::remote::RemotePaneState,
     pub(crate) pane: SettingsPane,
     focus: FocusHandle,
     search_query: String,
@@ -483,7 +469,6 @@ impl SettingsState {
             }
         });
         Self {
-            remote: settings::remote::RemotePaneState::new(cx),
             pane: SettingsPane::General,
             focus: cx.focus_handle(),
             search_query: String::new(),
@@ -723,13 +708,6 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.remote_client.is_active() {
-            return;
-        }
-
-        if self.settings_page.pane != pane {
-            self.dismiss_remote_dialog();
-        }
         if self.settings_page.pane == SettingsPane::Updates && pane != SettingsPane::Updates {
             self.pause_updates_pane(cx);
         }
@@ -760,7 +738,6 @@ impl NativeRoot {
         }
         self.settings_page.pane = pane;
         match pane {
-            SettingsPane::Account | SettingsPane::Remote => self.enter_remote_settings(cx),
             SettingsPane::Missions => self.refresh_settings_crews(cx),
             SettingsPane::Agents => {
                 if self.settings_page.agents.is_none() {
@@ -864,10 +841,6 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.remote_client.is_active() {
-            return;
-        }
-
         self.enter_settings_pane(SettingsPane::from_route(pane), window, cx);
     }
 
@@ -968,9 +941,6 @@ impl NativeRoot {
         activity: CommandInstallActivity,
         cx: &mut Context<Self>,
     ) {
-        if self.remote_client.is_active() {
-            return;
-        }
         if self.settings_page.command_install_activity.is_some() {
             return;
         }
@@ -1029,7 +999,6 @@ impl NativeRoot {
         for chat in self.attached.values() {
             app_settings::configure_terminal(&chat.terminal, self.settings(cx));
         }
-        self.remote_client.configure_remote_terminals(cx);
     }
 
     fn browse_settings_working_dir(&mut self, cx: &mut Context<Self>) {
@@ -1090,9 +1059,6 @@ impl NativeRoot {
     pub(crate) fn settings_confirm_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if self.route != AppRoute::Settings {
             return None;
-        }
-        if self.remote_overlay_open() {
-            return Some(self.remote_confirm_overlay(cx));
         }
         if self.settings_page.pane == SettingsPane::Agents {
             return self
@@ -1642,12 +1608,6 @@ mod tests {
     fn settings_routes_fall_back_to_general() {
         assert_eq!(SettingsPane::from_route(None), SettingsPane::General);
         assert_eq!(
-            SettingsPane::from_route(Some("account")),
-            SettingsPane::Account
-        );
-        assert_eq!(SettingsPane::Account.key(), "account");
-        assert_eq!(SettingsPane::Account.icon(), "user-round.svg");
-        assert_eq!(
             SettingsPane::from_route(Some("appearance")),
             SettingsPane::Appearance
         );
@@ -1676,9 +1636,9 @@ mod tests {
             let all = filtered_nav_groups("");
             assert_eq!(
                 all.iter().map(|(label, _)| *label).collect::<Vec<_>>(),
-                ["App", "Integrations", "Cloud", "System"]
+                ["App", "Integrations", "System"]
             );
-            assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 15);
+            assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 13);
             assert_eq!(
                 all[0],
                 (
@@ -1708,11 +1668,14 @@ mod tests {
             );
             assert_eq!(
                 all[2],
-                ("Cloud", vec![SettingsPane::Account, SettingsPane::Remote])
-            );
-            assert_eq!(
-                filtered_nav_groups("remote"),
-                vec![("Cloud", vec![SettingsPane::Remote])]
+                (
+                    "System",
+                    vec![
+                        SettingsPane::Updates,
+                        SettingsPane::Diagnostics,
+                        SettingsPane::About
+                    ]
+                )
             );
             assert_eq!(
                 SettingsPane::from_route(Some("skills")),

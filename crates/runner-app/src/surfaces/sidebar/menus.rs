@@ -32,10 +32,6 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let entries = entries
-            .into_iter()
-            .filter(|(_, action)| self.menu_action_supported(action, cx))
-            .collect::<Vec<_>>();
         if entries.is_empty() {
             return;
         }
@@ -170,28 +166,12 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let mut entries = mission_menu_entries(
+        let entries = mission_menu_entries(
             &node.id,
             node.pinned_position.is_some(),
             &summary.mission.id,
             summary.mission.title,
         );
-        if self.front_page.is_remote() {
-            entries.insert(
-                0,
-                if summary.mission.running {
-                    (
-                        UiMenuItem::new(crate::i18n::message("ui.stop")).icon("square.svg"),
-                        SidebarMenuAction::StopMission(summary.mission.id.clone()),
-                    )
-                } else {
-                    (
-                        UiMenuItem::new(crate::i18n::message("ui.resume")).icon("play.svg"),
-                        SidebarMenuAction::ResumeMission(summary.mission.id.clone()),
-                    )
-                },
-            );
-        }
         self.open_sidebar_context_menu(position, entries, window, cx);
     }
 
@@ -204,9 +184,7 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) {
         let action = SidebarMenuAction::NewChat(scope);
-        if self.menu_action_supported(&action, cx) {
-            self.handle_sidebar_menu_action(action, window, cx);
-        }
+        self.handle_sidebar_menu_action(action, window, cx);
     }
 
     pub(super) fn open_project_menu(
@@ -226,58 +204,6 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.menu_action_supported(&action, cx) {
-            return;
-        }
-        if self.front_page.is_remote() {
-            match &action {
-                SidebarMenuAction::DeleteProject(id) => {
-                    if let Some(shell) = self.shell.upgrade() {
-                        let id = id.clone();
-                        shell.update(cx, |root, cx| {
-                            root.remote_client.open_delete_project(id, cx);
-                        });
-                    }
-                    return;
-                }
-                SidebarMenuAction::StopMission(id) | SidebarMenuAction::ResumeMission(id) => {
-                    let id = id.clone();
-                    let action = action.clone();
-                    if let Some(shell) = self.shell.upgrade() {
-                        shell.update(cx, |root, cx| {
-                            let feature = match action {
-                                SidebarMenuAction::StopMission(_) => "stopMission",
-                                SidebarMenuAction::ResumeMission(_) => "resumeMission",
-                                _ => "archive",
-                            };
-                            root.remote_client.remote_action(
-                                format!("mission:{id}"),
-                                &[feature],
-                                move |client| {
-                                    let mut done =
-                                        crate::surfaces::front_page::actions::Completion::default();
-                                    match action {
-                                        SidebarMenuAction::StopMission(_) => {
-                                            client.stop_mission(id)?
-                                        }
-                                        SidebarMenuAction::ResumeMission(_) => {
-                                            done.reopened_sessions = client
-                                                .resume_mission(id, (INITIAL_COLS, INITIAL_ROWS))?
-                                        }
-                                        _ => unreachable!(),
-                                    }
-                                    Ok(done)
-                                },
-                                cx,
-                            );
-                        });
-                    }
-                    return;
-                }
-                _ => {}
-            }
-        }
-
         match action {
             SidebarMenuAction::NewChat(scope) => {
                 self.set_active_project(scope.project_id().map(str::to_owned), cx);
@@ -301,25 +227,9 @@ impl Sidebar {
                 let operation = move |client: crate::surfaces::front_page::FrontPageClient| {
                     client.pin(&node, !pinned)
                 };
-                if self.front_page.is_remote() {
-                    if let Some(shell) = self.shell.upgrade() {
-                        shell.update(cx, |root, cx| {
-                            root.remote_client.remote_action(
-                                format!("pin:{node_id}"),
-                                &["pin"],
-                                move |client| {
-                                    operation(client)?;
-                                    Ok(Default::default())
-                                },
-                                cx,
-                            )
-                        });
-                    }
-                } else {
-                    match operation(self.front_page.clone()) {
-                        Ok(()) => self.refresh_store(StoreRefreshKind::All, cx),
-                        Err(error) => self.report_error(error.to_string(), cx),
-                    }
+                match operation(self.front_page.clone()) {
+                    Ok(()) => self.refresh_store(StoreRefreshKind::All, cx),
+                    Err(error) => self.report_error(error.to_string(), cx),
                 }
             }
             SidebarMenuAction::Rename(target) => {
@@ -332,15 +242,11 @@ impl Sidebar {
                             .upgrade()
                             .and_then(|shell| {
                                 let shell = shell.read(cx);
-                                let layout = if shell.remote_client.is_active() {
-                                    shell.remote_client.tab_layout(node_id)
-                                } else {
-                                    shell
-                                        .tabs
-                                        .tabs()
-                                        .iter()
-                                        .find(|layout| layout.id == *node_id)
-                                };
+                                let layout = shell
+                                    .tabs
+                                    .tabs()
+                                    .iter()
+                                    .find(|layout| layout.id == *node_id);
                                 layout.map(|layout| shell.tab_label_source(layout, cx))
                             })
                             .unwrap_or_else(|| crate::i18n::message("ui.chat_tab"));
@@ -390,29 +296,13 @@ impl Sidebar {
                 }
             }
             SidebarMenuAction::ArchiveMission(mission_id) => {
-                if !self.front_page.is_remote() && self.archiving_missions.contains(&mission_id) {
+                if self.archiving_missions.contains(&mission_id) {
                     return;
                 }
                 let archive_id = mission_id.clone();
                 let operation = move |client: crate::surfaces::front_page::FrontPageClient| {
                     client.archive_mission_state(archive_id).map(drop)
                 };
-                if self.front_page.is_remote() {
-                    if let Some(shell) = self.shell.upgrade() {
-                        shell.update(cx, |root, cx| {
-                            root.remote_client.remote_action(
-                                format!("mission:{mission_id}"),
-                                &["archive"],
-                                move |client| {
-                                    operation(client)?;
-                                    Ok(Default::default())
-                                },
-                                cx,
-                            )
-                        });
-                    }
-                    return;
-                }
                 self.set_mission_archiving(mission_id.clone(), true, cx);
                 let core = self.front_page.clone();
                 let archive_task = cx.background_spawn(async move {
@@ -445,7 +335,6 @@ impl Sidebar {
                 })
                 .detach();
             }
-            SidebarMenuAction::StopMission(_) | SidebarMenuAction::ResumeMission(_) => {}
             SidebarMenuAction::DeleteProject(project_id) => {
                 if let Some(shell) = self.shell.upgrade() {
                     shell.update(cx, |shell, shell_cx| {

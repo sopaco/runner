@@ -9,8 +9,6 @@ mod layout;
 use super::*;
 use runner_core::protocol::project::ProjectScope;
 
-use crate::surfaces::front_page::actions::WorkspaceAction;
-
 use crate::*;
 
 use runner_core::protocol::model::Runtime;
@@ -143,10 +141,6 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.remote_client.is_active() {
-            return;
-        }
-
         self.dismiss_sidebar_transients(cx);
         let session_key = chat.agent_session_key.clone();
         self.archived_chat_detail = Some(chat);
@@ -163,21 +157,6 @@ impl NativeRoot {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.remote_client.is_active() {
-            if self.front_page_client(cx).supports(&["fork"])
-                && self
-                    .front_page_session(session_id, cx)
-                    .is_some_and(|entry| entry.native_fork)
-            {
-                self.fork_confirm = Some(ForkConfirm {
-                    session_id: session_id.into(),
-                    pending: false,
-                });
-                cx.notify();
-            }
-            return;
-        }
-
         if self
             .fork_confirm
             .as_ref()
@@ -193,17 +172,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn confirm_fork_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let remote = self.front_page_client(cx).is_remote();
-        let (source_session_id, title, size) = if remote {
-            let Some(confirm) = self.fork_confirm.take() else {
-                return;
-            };
-            let size = self
-                .remote_client
-                .remote_terminal_size(&confirm.session_id)
-                .unwrap_or((INITIAL_COLS, INITIAL_ROWS));
-            (confirm.session_id, None, (size.0.max(20), size.1.max(8)))
-        } else {
+        let (source_session_id, title, size) = {
             let Some(id) = begin_fork_submission(&mut self.fork_confirm) else {
                 return;
             };
@@ -220,38 +189,15 @@ impl NativeRoot {
             (id, title, (INITIAL_COLS, INITIAL_ROWS))
         };
         cx.notify();
-        let Some(operation) =
-            WorkspaceAction::prepare(self, format!("session:{source_session_id}"), &["fork"], cx)
-        else {
-            return;
-        };
-        let core = operation.client.clone();
+        let core = self.front_page_client(cx);
         let backend_source_session_id = source_session_id.clone();
         let fork = cx.background_spawn(async move {
             core.fork(&backend_source_session_id, title, size)
                 .map_err(|error| error.to_string())
         });
-        let origin_epoch = self.remote_client.ui.epoch;
         cx.spawn_in(window, async move |weak, cx| {
             let result = fork.await;
             let _ = weak.update_in(cx, |this, window, cx| {
-                let Some(result) = WorkspaceAction::complete(
-                    this,
-                    operation,
-                    result,
-                    |session| crate::surfaces::front_page::actions::Completion {
-                        session: Some(session),
-                        ..Default::default()
-                    },
-                    cx,
-                ) else {
-                    return;
-                };
-                if this.remote_client.ui.epoch != origin_epoch {
-                    this.forking_sessions.remove(&source_session_id);
-                    cx.notify();
-                    return;
-                }
                 this.fork_confirm = None;
                 match result {
                     Ok(spawned) => {
@@ -321,22 +267,6 @@ impl NativeRoot {
             .get("session_id")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned);
-        if event.name == "session/input-error" {
-            if let Some(address) = session_id
-                .as_deref()
-                .filter(|id| runner_core::remote::terminal_target(id).is_some())
-            {
-                if let Some(message) = event
-                    .payload
-                    .get("message")
-                    .and_then(serde_json::Value::as_str)
-                {
-                    self.remote_client
-                        .report_remote_input_error(address, message.to_owned(), cx);
-                }
-                return;
-            }
-        }
         if event.name == "session/status"
             && event
                 .payload
@@ -514,9 +444,6 @@ impl NativeRoot {
     }
 
     pub(crate) fn sync_active_chat_detail(&mut self, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() {
-            return;
-        }
         let selected = self.panel_session_id(cx);
         let Some(session_id) = selected else {
             return;
@@ -531,9 +458,6 @@ impl NativeRoot {
     }
 
     pub(crate) fn ensure_active_chat_detail(&mut self, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() {
-            return;
-        }
         let active = self.panel_session_id(cx);
         let loaded = self
             .active_chat_detail
@@ -620,7 +544,7 @@ impl NativeRoot {
                     );
                     if settled {
                         this.chat_transitions.remove(&tracked_id);
-                        if this.remote_client.is_local() && this.route == AppRoute::Chat {
+                        if this.route == AppRoute::Chat {
                             let active_drawer = this
                                 .tabs
                                 .active()

@@ -11,8 +11,7 @@ impl NativeRoot {
             self.front_page_session(id, cx)
                 .and_then(|entry| Runtime::parse(&entry.agent_runtime))
         });
-        if !self.remote_client.is_local()
-            || start_surface_visible(Some(layout))
+        if start_surface_visible(Some(layout))
             || self.settings(cx).chat_panel_open
             || terminal_tab
             || top_right_pane(&layout.root).id != pane_id

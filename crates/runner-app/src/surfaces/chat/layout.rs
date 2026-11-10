@@ -31,8 +31,7 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let remote = self.front_page_client(cx).is_remote();
-        if !remote && self.route != AppRoute::Chat {
+        if self.route != AppRoute::Chat {
             return;
         }
         let Some(mut draft) = self.front_page_layout().cloned() else {
@@ -49,19 +48,12 @@ impl NativeRoot {
             return;
         }
         if let Err(error) = draft.move_to(pane_id, target_id, side) {
-            if !remote {
-                self.chat_error = Some(error.to_string().into());
-                cx.notify();
-            }
+            self.chat_error = Some(error.to_string().into());
+            cx.notify();
             return;
         }
-        if !remote {
-            *self.tabs.active_mut().unwrap() = draft.clone();
-        }
-        let saved = self.save_workspace_layout(draft, false, cx);
-        if remote {
-            return;
-        }
+        *self.tabs.active_mut().unwrap() = draft.clone();
+        let saved = self.save_workspace_layout(draft, cx);
         let result = saved
             .and_then(|_| self.reload_tabs(cx))
             .and_then(|_| self.ensure_active_tab_attached(window, cx));
@@ -84,8 +76,7 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let remote = self.front_page_client(cx).is_remote();
-        if !remote && self.route != AppRoute::Chat {
+        if self.route != AppRoute::Chat {
             return;
         }
         let Some(original) = self.front_page_layout().cloned() else {
@@ -102,10 +93,8 @@ impl NativeRoot {
             split_decision(bounds, orientation, self.settings(cx).app_zoom),
             SplitDecision::Allowed
         ) {
-            if !remote {
-                self.chat_error = Some(crate::i18n::message("ui.too_small_to_split"));
-                cx.notify();
-            }
+            self.chat_error = Some(crate::i18n::message("ui.too_small_to_split"));
+            cx.notify();
             return;
         }
         let terminal_location = self.active_tab_is_terminal(cx).then(|| {
@@ -115,55 +104,32 @@ impl NativeRoot {
                 .into_iter()
                 .find(|leaf| leaf.id == pane_id)
                 .and_then(|leaf| leaf.session_id.as_deref());
-            if remote {
-                (
-                    ProjectScope::or_root(original.parent_id.clone()),
-                    session
-                        .and_then(|id| self.front_page_session(id, cx))
-                        .and_then(|session| session.cwd),
-                )
-            } else {
-                session
-                    .and_then(|id| {
-                        self.session_entry(id, cx).map(|entry| {
-                            (
-                                ProjectScope::or_root(entry.project_id.clone()),
-                                self.session_start_cwd(id, cx),
-                            )
-                        })
+            session
+                .and_then(|id| {
+                    self.session_entry(id, cx).map(|entry| {
+                        (
+                            ProjectScope::or_root(entry.project_id.clone()),
+                            self.session_start_cwd(id, cx),
+                        )
                     })
-                    .unwrap_or_else(|| self.terminal_start_location(cx))
-            }
+                })
+                .unwrap_or_else(|| self.terminal_start_location(cx))
         });
         let mut draft = original.clone();
         let next = match draft.split(pane_id, orientation) {
             Ok(next) => next,
             Err(error) => {
-                if !remote {
-                    self.chat_error = Some(error.to_string().into());
-                    cx.notify();
-                }
+                self.chat_error = Some(error.to_string().into());
+                cx.notify();
                 return;
             }
         };
-        if !remote {
-            *self.tabs.active_mut().unwrap() = draft.clone();
-        }
+        *self.tabs.active_mut().unwrap() = draft.clone();
         if let Some((scope, cwd)) = terminal_location {
-            self.spawn_terminal_in_pane(
-                next,
-                if remote { draft } else { original },
-                scope,
-                cwd,
-                window,
-                cx,
-            );
+            self.spawn_terminal_in_pane(next, original, scope, cwd, window, cx);
             return;
         }
-        let saved = self.save_workspace_layout(draft, false, cx);
-        if remote {
-            return;
-        }
+        let saved = self.save_workspace_layout(draft, cx);
         let result = saved
             .and_then(|_| self.reload_tabs(cx))
             .and_then(|_| self.ensure_active_tab_attached(window, cx));
@@ -217,7 +183,7 @@ impl NativeRoot {
             .front_page_layout()
             .context("active tab is missing")?
             .clone();
-        self.save_workspace_layout(layout, false, cx)
+        self.save_workspace_layout(layout, cx)
     }
 
     pub(crate) fn resize_split(
@@ -227,9 +193,6 @@ impl NativeRoot {
         event: &DragMoveEvent<SplitResizeDrag>,
         cx: &mut Context<Self>,
     ) {
-        if !self.front_page_client(cx).supports(&["layout"]) {
-            return;
-        }
         if self
             .front_page_layout()
             .is_some_and(|layout| self.launcher_tab_pending(&layout.id, cx))
@@ -248,10 +211,6 @@ impl NativeRoot {
         }
         .clamp(0.15, 0.85)
             * 100.;
-        if self.remote_client.is_active() {
-            self.remote_client.resize_split(split_id, ratio, cx);
-            return;
-        }
         if self
             .tabs
             .active_mut()
@@ -275,13 +234,6 @@ impl NativeRoot {
     }
 
     pub(crate) fn finish_split_resize(&mut self, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() {
-            if let Some(draft) = self.remote_client.finish_split_resize() {
-                self.remote_layout(draft, false, cx);
-            }
-            return;
-        }
-
         if self.resizing_split.take().is_some() {
             cx.notify();
         }
@@ -295,11 +247,6 @@ impl NativeRoot {
     }
 
     pub(crate) fn finish_terminal_drawer_resize(&mut self, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() {
-            self.remote_client.finish_drawer_resize(cx);
-            return;
-        }
-
         if !self.drawer_resizing {
             return;
         }

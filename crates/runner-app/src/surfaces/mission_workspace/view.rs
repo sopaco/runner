@@ -87,8 +87,6 @@ impl MissionWorkspace {
             cx,
         );
         let notices = self.render_mission_notices(cx);
-        let covered_top = Rc::new(Cell::new(None));
-        let column_top = Rc::new(Cell::new(None));
         let body = if self.loading {
             div()
                 .relative()
@@ -102,15 +100,11 @@ impl MissionWorkspace {
         } else if self.mission_view().is_none() {
             self.render_mission_load_error(cx)
         } else {
-            self.render_loaded_mission(covered_top.clone(), window, cx)
+            self.render_loaded_mission(window, cx)
         };
-        let control_ids = self.control_session_ids(cx);
-        let group_control = crate::terminal::control::mission_covered(
-            control_ids.iter().map(|id| self.attached.get(id)),
-        );
         let drawer_visible = !self.loading
             && self.mission_view().is_some()
-            && mission_drawer_available(self.archived(), self.secondary && !group_control)
+            && mission_drawer_available(self.archived(), self.secondary)
             && self.layout.drawer.open();
         let drawer_focused = drawer_visible && self.drawer_focused(window, cx);
         let drawer = drawer_visible.then(|| self.render_mission_terminal_drawer(cx));
@@ -122,17 +116,13 @@ impl MissionWorkspace {
                 0.2
             },
         );
-        let banner = self
-            .shell
-            .upgrade()
-            .filter(|_| !self.presentation.is_remote())
-            .and_then(|shell| {
-                shell.update(cx, |shell, cx| {
-                    (shell.route != AppRoute::Settings)
-                        .then(|| shell.render_daemon_banner(cx))
-                        .flatten()
-                })
-            });
+        let banner = self.shell.upgrade().and_then(|shell| {
+            shell.update(cx, |shell, cx| {
+                (shell.route != AppRoute::Settings)
+                    .then(|| shell.render_daemon_banner(cx))
+                    .flatten()
+            })
+        });
         let center = div()
             .debug_selector(|| "MISSION_CONTENT_COLUMN".into())
             .pb(rems(8. / 16.))
@@ -189,15 +179,6 @@ impl MissionWorkspace {
             .h_full()
             .flex()
             .flex_col()
-            .child({
-                let column_top = column_top.clone();
-                gpui::canvas(
-                    move |bounds, _, _| column_top.set(Some(bounds.top())),
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .inset_0()
-            })
             .child(center)
             .children(drawer.map(|drawer| {
                 div()
@@ -220,8 +201,8 @@ impl MissionWorkspace {
                             |drag: &DrawerResizeDrag, _, _, cx: &mut App| cx.new(|_| drag.clone()),
                         ),
                     )
-                    .child({
-                        let drawer = div()
+                    .child(
+                        div()
                             .debug_selector(|| "MISSION_DRAWER_ISLAND".into())
                             .relative()
                             .h(rems(self.layout.drawer.height() / 16.))
@@ -248,21 +229,8 @@ impl MissionWorkspace {
                             })
                             .pb(rems(8. / 16.))
                             .overflow_hidden()
-                            .child(drawer);
-                        if group_control {
-                            crate::terminal::control::cover(
-                                drawer,
-                                "take-back-mission-drawer",
-                                &control_ids
-                                    .iter()
-                                    .filter_map(|id| self.attached.get(id))
-                                    .collect::<Vec<_>>(),
-                                crate::terminal::control::GroupKind::MissionDrawer,
-                            )
-                        } else {
-                            drawer
-                        }
-                    })
+                            .child(drawer),
+                    )
             }))
             .on_drag_move::<DrawerResizeDrag>(cx.listener(
                 |this, event: &DragMoveEvent<DrawerResizeDrag>, _, cx| {
@@ -272,32 +240,6 @@ impl MissionWorkspace {
             .on_drop(cx.listener(|this, _: &DrawerResizeDrag, _, cx| {
                 this.finish_terminal_drawer_resize(cx)
             }));
-        let center = center.children(group_control.then(|| {
-            let card = crate::terminal::control::mission_card(
-                &control_ids
-                    .iter()
-                    .filter_map(|id| self.attached.get(id))
-                    .collect::<Vec<_>>(),
-            );
-            gpui::container_query(move |_, _, _| {
-                let inset = covered_top
-                    .get()
-                    .zip(column_top.get())
-                    .map_or(px(0.), |(body, column)| (body - column).max(px(0.)));
-                div().size_full().pt(inset).flex().flex_col().child(
-                    div()
-                        .flex_1()
-                        .min_h(px(0.))
-                        .p_6()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .children(card),
-                )
-            })
-            .absolute()
-            .inset_0()
-        }));
         let rail_open = self.settings(cx).mission_rail_open;
         let (rail_visibility, rail_animating) = self.rail_visibility.animate_to(
             if rail_open { 1. } else { 0. },
@@ -460,9 +402,6 @@ impl MissionWorkspace {
     }
 
     pub(crate) fn render_mission_overlays(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        if self.presentation.is_remote() && !self.active {
-            return Vec::new();
-        }
         let mut overlays = Vec::new();
         if self.rename_modal.is_some() {
             overlays.push(self.render_mission_rename_modal(cx));
@@ -497,37 +436,26 @@ impl MissionWorkspace {
                     .items_center()
                     .gap_1()
                     .children((!self.resuming).then(|| self.action_menu.clone()))
-                    .children(
-                        (any_stopped && !busy && self.remote_supports(&["resumeMission"])).then(
-                            || {
-                                SessionControl::new("mission-resume", SessionControlKind::Resume)
-                                    .variant(SessionControlVariant::Header)
-                                    .title(crate::i18n::text(
-                                        "ui.respawn_every_stopped_slot_in_this_mission",
-                                    ))
-                                    .on_press(move |window, cx| {
-                                        resume_root.update(cx, |this, cx| {
-                                            this.resume_open_mission(window, cx)
-                                        });
-                                    })
-                            },
-                        ),
-                    )
-                    .children(
-                        (self.any_session_live()
-                            && !busy
-                            && self.remote_supports(&["stopMission"]))
-                        .then(|| {
-                            SessionControl::new("mission-stop", SessionControlKind::Stop)
-                                .variant(SessionControlVariant::Header)
-                                .title(crate::i18n::text("ui.stop_all_slots"))
-                                .on_press(move |window, cx| {
-                                    stop_root.update(cx, |this, cx| {
-                                        this.open_stop_all_confirm(window, cx)
-                                    });
-                                })
-                        }),
-                    )
+                    .children((any_stopped && !busy).then(|| {
+                        SessionControl::new("mission-resume", SessionControlKind::Resume)
+                            .variant(SessionControlVariant::Header)
+                            .title(crate::i18n::text(
+                                "ui.respawn_every_stopped_slot_in_this_mission",
+                            ))
+                            .on_press(move |window, cx| {
+                                resume_root
+                                    .update(cx, |this, cx| this.resume_open_mission(window, cx));
+                            })
+                    }))
+                    .children((self.any_session_live() && !busy).then(|| {
+                        SessionControl::new("mission-stop", SessionControlKind::Stop)
+                            .variant(SessionControlVariant::Header)
+                            .title(crate::i18n::text("ui.stop_all_slots"))
+                            .on_press(move |window, cx| {
+                                stop_root
+                                    .update(cx, |this, cx| this.open_stop_all_confirm(window, cx));
+                            })
+                    }))
             })
         });
         let title = mission
@@ -535,8 +463,7 @@ impl MissionWorkspace {
             .map(|mission| mission.title.clone())
             .unwrap_or_else(|| "…".into());
         let drawer_action = (mission_drawer_available(self.archived(), secondary)
-            && (!self.layout.drawer.shells().is_empty()
-                || self.remote_supports(&["startShell", "layout"])))
+            && !self.layout.drawer.shells().is_empty())
         .then(|| {
             let open = self.layout.drawer.open();
             IconButton::new(
@@ -635,19 +562,6 @@ impl MissionWorkspace {
                     },
                 )
                 .into_any_element(),
-            );
-        }
-        if self.error.is_some() && self.presentation.shell_retry_available() {
-            let root = cx.entity();
-            notices.push(
-                Button::new("retry-mission-shell", crate::i18n::text("ui.retry"))
-                    .disabled(
-                        !self.remote_supports(&["layout"]) || self.presentation.shell_pending(),
-                    )
-                    .on_press(move |window, cx| {
-                        root.update(cx, |this, cx| this.add_terminal_drawer_shell(window, cx))
-                    })
-                    .into_any_element(),
             );
         }
         notices
@@ -760,10 +674,8 @@ impl MissionWorkspace {
             active_id.as_deref(),
             &labels,
             super::panes::TerminalDrawerCallbacks {
-                can_add: self.remote_supports(&["startShell", "layout"])
-                    && self.presentation.drawer_actions_available(),
-                can_close: self.remote_supports(&["close"])
-                    && self.presentation.drawer_actions_available(),
+                can_add: true,
+                can_close: true,
                 activate: Rc::new(move |session_id, window, cx| {
                     activate_root.update(cx, |this, cx| {
                         this.activate_terminal_drawer_shell(&session_id, window, cx)
@@ -808,9 +720,7 @@ impl MissionWorkspace {
         let terminal_style = self.terminal_style(cx);
         let terminal_background =
             crate::terminal::element::to_hsla(terminal_style.palette.background, 1.);
-        let terminal_surface = if self.presentation.is_remote() {
-            self.remote_terminal_content(&session_id, cx)
-        } else if let Some(chat) = self.attached.get(&session_id) {
+        let terminal_surface = if let Some(chat) = self.attached.get(&session_id) {
             let terminal = Arc::clone(&chat.terminal);
             let terminal_interaction = chat.terminal_interaction.clone();
             let terminal_scrollbar = chat.terminal_scrollbar.clone();
@@ -874,12 +784,7 @@ impl MissionWorkspace {
                         )
                         .child(terminal_scrollbar),
                 );
-            if interactive
-                || self
-                    .attached
-                    .get(&session_id)
-                    .is_some_and(|chat| !chat.terminal.control().desktop())
-            {
+            if interactive {
                 let key_root = root.clone();
                 let paste_root = root.clone();
                 let drop_root = root.clone();
@@ -945,46 +850,6 @@ impl MissionWorkspace {
             chat_lifecycle::PaneOverlayState::Archiving
             | chat_lifecycle::PaneOverlayState::None => None,
         };
-        let terminal_surface = if self.layout.drawer.shells().iter().any(|id| {
-            self.attached
-                .get(id)
-                .is_some_and(|chat| !chat.terminal.control().desktop())
-        }) {
-            crate::terminal::control::measure_panes(
-                div().absolute().inset_0().child(terminal_surface),
-                &self
-                    .layout
-                    .drawer
-                    .shells()
-                    .iter()
-                    .filter_map(|id| self.attached.get(id))
-                    .collect::<Vec<_>>(),
-                self.terminal_style(cx),
-            )
-            .into_any_element()
-        } else {
-            terminal_surface
-        };
-        let remote = self.attached.get(&session_id).filter(|chat| {
-            entry.status == SessionStatus::Running && !chat.terminal.control().desktop()
-        });
-        let group = crate::terminal::control::mission_covered(
-            self.control_session_ids(cx)
-                .iter()
-                .map(|id| self.attached.get(id)),
-        );
-        let remote_overlay = (!group)
-            .then(|| {
-                remote.map(|chat| {
-                    crate::terminal::control::cover(
-                        div().absolute().inset_0(),
-                        format!("take-back-mission-drawer-{session_id}"),
-                        &[chat],
-                        crate::terminal::control::GroupKind::Tab,
-                    )
-                })
-            })
-            .flatten();
         let focus_id = session_id.clone();
         Some(
             div()
@@ -995,7 +860,6 @@ impl MissionWorkspace {
                 .bg(terminal_background)
                 .child(terminal_surface)
                 .children(overlay_element)
-                .children(remote_overlay)
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, window, cx| {
@@ -1006,41 +870,18 @@ impl MissionWorkspace {
         )
     }
 
-    fn render_loaded_mission(
-        &mut self,
-        covered_top: Rc<Cell<Option<Pixels>>>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        if !self.presentation.is_remote()
-            && self.members().iter().any(|session| {
-                self.app_store
-                    .read(cx)
-                    .bridge
-                    .session(&session.session.id)
-                    .is_some_and(|terminal| !terminal.control().desktop())
-            })
-        {
+    fn render_loaded_mission(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if self.members().iter().any(|session| {
+            self.app_store
+                .read(cx)
+                .bridge
+                .session(&session.session.id)
+                .is_some_and(|terminal| !terminal.control().desktop())
+        }) {
             if let Err(error) = self.ensure_mission_terminals_attached(window, cx) {
                 self.error = Some(error.to_string().into());
             }
         }
-        if !self.layout.drawer.open() {
-            for id in self.layout.drawer.shells() {
-                if let Some(chat) = self
-                    .attached
-                    .get(id)
-                    .filter(|chat| !chat.terminal.control().desktop())
-                {
-                    chat.terminal_interaction
-                        .update(cx, |interaction, _| interaction.pane_size = None);
-                }
-            }
-        }
-        let control_ids = self.control_session_ids(cx);
-        let group_control = crate::terminal::control::mission_covered(
-            control_ids.iter().map(|id| self.attached.get(id)),
-        );
         let feed_active = self.secondary || self.active_tab == MissionTab::Feed;
         let tabs = self.cached_region(
             "mission-tabs",
@@ -1083,30 +924,14 @@ impl MissionWorkspace {
             .min_h(px(0.))
             .flex_1()
             .overflow_hidden()
-            .child(pane)
-            .child(
-                gpui::canvas(
-                    move |bounds, _, _| covered_top.set(Some(bounds.top())),
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .inset_0(),
-            );
+            .child(pane);
         if self.archiving {
             panes = panes.child(SessionOverlay::transition(
                 "mission-archiving",
                 SessionOverlayKind::Archiving,
             ));
         }
-        if group_control {
-            let slots = self
-                .members()
-                .iter()
-                .filter_map(|session| self.attached.get(&session.session.id))
-                .collect::<Vec<_>>();
-            panes = crate::terminal::control::measure_panes(panes, &slots, self.terminal_style(cx));
-        }
-        if self.secondary && !self.duplicate_dismissed && !group_control {
+        if self.secondary && !self.duplicate_dismissed {
             panes = panes.child(self.render_duplicate_mission_overlay(cx));
         }
         let surface = div()
@@ -1117,19 +942,6 @@ impl MissionWorkspace {
             .flex_col()
             .child(tabs)
             .child(panes);
-        let surface = if group_control {
-            crate::terminal::control::cover(
-                surface,
-                "take-back-mission",
-                &control_ids
-                    .iter()
-                    .filter_map(|id| self.attached.get(id))
-                    .collect::<Vec<_>>(),
-                crate::terminal::control::GroupKind::MissionBody(WORKSPACE_TABS_HEIGHT),
-            )
-        } else {
-            surface
-        };
         surface.into_any_element()
     }
 
@@ -1142,12 +954,8 @@ impl MissionWorkspace {
             .mission_view()
             .as_ref()
             .is_some_and(|mission| mission.status == MissionStatus::Running);
-        let can_compose = mission_running
-            && !self.archived()
-            && !self.secondary
-            && self.remote_supports(&["post"]);
-        let paused = self.remote_supports(&["resumeMission", "archive"])
-            && mission_running
+        let can_compose = mission_running && !self.archived() && !self.secondary;
+        let paused = mission_running
             && !self.mission_composer_roster().is_empty()
             && !self.any_session_live()
             && self.slot_actions.is_empty()

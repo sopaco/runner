@@ -249,10 +249,7 @@ impl NativeRoot {
         let updater = global_updater(cx);
         let root_entity = cx.entity().downgrade();
         let composition = cx.new(|_| surfaces::render_cache::ShellComposition::new(root_entity));
-        let remote_client =
-            surfaces::remote_client::RemoteClient::new(app_store.clone(), root_focus.clone(), cx);
         let mut root = Self {
-            remote_client,
             composition,
             render_regions: HashMap::new(),
             window_label: window_label.clone(),
@@ -353,8 +350,7 @@ impl NativeRoot {
                 }
                 cx.notify();
             }),
-            _store_subscription: cx.observe_in(&app_store, window, |this, _, window, cx| {
-                this.leave_other_computers_when_signed_out(window, cx);
+            _store_subscription: cx.observe_in(&app_store, window, |this, _, _window, cx| {
                 this.handle_app_store_update(cx);
             }),
         };

@@ -58,13 +58,6 @@ impl Sidebar {
         marker: String,
         cx: &mut Context<Self>,
     ) {
-        if !self.front_page.supports(&[if kind == DropKind::Pinned {
-            "reorderPinned"
-        } else {
-            "move"
-        }]) {
-            return;
-        }
         let drop_target = list_drop_target(
             &self.source_nodes(cx),
             kind,
@@ -102,9 +95,6 @@ impl Sidebar {
         visible_ids: &[String],
         cx: &mut Context<Self>,
     ) {
-        if !self.front_page.supports(&["move"]) {
-            return;
-        }
         let drop_target = container_drop_target(
             &self.source_nodes(cx),
             visible_ids,
@@ -232,11 +222,6 @@ impl Sidebar {
             .as_ref()
             .and_then(|id| nodes.iter().find(|node| &node.id == id));
         let pinned = target.kind == DropKind::Pinned;
-        let feature = if pinned { "reorderPinned" } else { "move" };
-        if !self.front_page.supports(&[feature]) {
-            self.clear_sidebar_drag("drop", cx);
-            return;
-        }
         let node = node.clone();
         let project = project.cloned();
         let operation = move |client: crate::surfaces::front_page::FrontPageClient| {
@@ -246,23 +231,6 @@ impl Sidebar {
                 client.move_item(&node, project.as_ref(), &order)
             }
         };
-        if self.front_page.is_remote() {
-            if let Some(shell) = self.shell.upgrade() {
-                shell.update(cx, |root, cx| {
-                    root.remote_client.remote_action(
-                        "sidebar-order".into(),
-                        &[feature],
-                        move |client| {
-                            operation(client)?;
-                            Ok(Default::default())
-                        },
-                        cx,
-                    )
-                });
-            }
-            self.clear_sidebar_drag("drop", cx);
-            return;
-        }
         let result = operation(self.front_page.clone());
         match result {
             Ok(nodes) => {

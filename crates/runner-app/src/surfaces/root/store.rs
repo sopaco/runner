@@ -13,30 +13,6 @@ impl NativeRoot {
         let previous = self.store_revisions;
         self.store_revisions = revisions;
         let reactions = revisions.reactions_since(previous);
-        if revisions.remote_enrollment != previous.remote_enrollment {
-            self.remote_finish_sign_in(cx);
-        }
-        if revisions.remote_notice != previous.remote_notice {
-            let status = self.app_store.read(cx).remote_warning.clone();
-            if let Some(status) = status {
-                let pin_locked = matches!(status, app_store::RemoteWarning::PinLocked);
-                self.show_toast(
-                    match status {
-                        app_store::RemoteWarning::Stopped(status) => {
-                            surfaces::settings::remote::stopped_text(&status).into()
-                        }
-                        app_store::RemoteWarning::PinLocked => {
-                            i18n::message("remote.pin_locked_toast")
-                        }
-                    },
-                    toast::ToastTone::Warning,
-                    cx,
-                );
-                if pin_locked {
-                    self.toasts.pin_lock_warning();
-                }
-            }
-        }
 
         if revisions.settings != previous.settings {
             self.sync_role_page_size(cx);

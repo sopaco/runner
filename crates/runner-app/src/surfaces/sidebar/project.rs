@@ -11,13 +11,6 @@ use runner_app::ui::{
 
 impl NativeRoot {
     pub(super) fn open_project_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() {
-            let anchor = self.front_page_sidebar().read(cx).project_anchor;
-            self.remote_client
-                .open_remote_project_picker(anchor, window, cx);
-            return;
-        }
-
         let cwd = self.settings(cx).default_working_dir.trim().to_owned();
         let name = project_name_from_path(&cwd);
         let cwd_input = cx.new(|input_cx| {
@@ -161,80 +154,50 @@ impl NativeRoot {
 
     fn confirm_delete_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let client = self.front_page_client(cx);
-        if !client.supports(&["deleteProject"]) {
+        let Some(project_id) = self.project_delete_confirm.clone() else {
             return;
-        }
-        let remote_target = client.is_remote();
-        let (project_id, force) = if remote_target {
-            let Some(prepared) = self.remote_client.prepare_delete_project() else {
-                return;
-            };
-            prepared
-        } else {
-            let Some(project) = self.project_delete_confirm.clone() else {
-                return;
-            };
-            (project, true)
         };
-        if !remote_target {
-            let deleting_active_chat = self
-                .tabs
-                .active_tab_id()
-                .and_then(|tab_id| {
-                    self.app_store
-                        .read(cx)
-                        .nodes
-                        .iter()
-                        .find(|node| node.id == tab_id)
-                })
-                .and_then(|node| node_project_id(&self.app_store.read(cx).nodes, node))
-                .as_deref()
-                == Some(project_id.as_str());
-            if deleting_active_chat {
-                self.set_route(AppRoute::Roles, cx);
-                self.load_role_page(cx);
-                window.focus(&self.root_focus, cx);
-            }
-            self.project_delete_busy = true;
+        let force = true;
+        let deleting_active_chat = self
+            .tabs
+            .active_tab_id()
+            .and_then(|tab_id| {
+                self.app_store
+                    .read(cx)
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == tab_id)
+            })
+            .and_then(|node| node_project_id(&self.app_store.read(cx).nodes, node))
+            .as_deref()
+            == Some(project_id.as_str());
+        if deleting_active_chat {
+            self.set_route(AppRoute::Roles, cx);
+            self.load_role_page(cx);
+            window.focus(&self.root_focus, cx);
         }
-        let epoch = self.remote_client.ui.epoch;
-        let guard = client.clone();
-        let id = project_id.clone();
+        self.project_delete_busy = true;
         let deleting_project_id = project_id.clone();
-        let operation = move || client.delete_project(project_id, force);
-        if remote_target {
-            let work = cx.background_spawn(async move { operation() });
-            cx.spawn(async move |weak, cx| {
-                let result = work.await;
-                let _ = weak.update(cx, |root, cx| {
-                    root.remote_client
-                        .complete_delete_project(&guard, epoch, &id, result, cx);
-                });
-            })
-            .detach();
-            cx.notify();
-        } else {
-            cx.spawn(async move |weak, cx| {
-                let result = operation();
-                let _ = weak.update(cx, |this, cx| {
-                    this.project_delete_busy = false;
-                    if let Err(error) = result {
-                        this.error = Some(error.to_string().into());
-                    } else {
-                        this.project_delete_confirm = None;
-                        this.sidebar.update(cx, |sidebar, sidebar_cx| {
-                            if sidebar.active_project_id.as_deref()
-                                == Some(deleting_project_id.as_str())
-                            {
-                                sidebar.set_active_project(None, sidebar_cx);
-                            }
-                        });
-                    }
-                    this.refresh_store(StoreRefreshKind::All, cx);
-                });
-            })
-            .detach();
-        }
+        cx.spawn(async move |weak, cx| {
+            let result = client.delete_project(project_id, force);
+            let _ = weak.update(cx, |this, cx| {
+                this.project_delete_busy = false;
+                if let Err(error) = result {
+                    this.error = Some(error.to_string().into());
+                } else {
+                    this.project_delete_confirm = None;
+                    this.sidebar.update(cx, |sidebar, sidebar_cx| {
+                        if sidebar.active_project_id.as_deref()
+                            == Some(deleting_project_id.as_str())
+                        {
+                            sidebar.set_active_project(None, sidebar_cx);
+                        }
+                    });
+                }
+                this.refresh_store(StoreRefreshKind::All, cx);
+            });
+        })
+        .detach();
     }
 }
 
@@ -247,28 +210,21 @@ impl NativeRoot {
         if self.project_modal.is_some() {
             overlays.push(self.render_project_modal(cx));
         }
-        if let Some(picker) = self.remote_client.project_picker() {
-            overlays.push(picker.into_any_element());
-        }
-        let deletion = if self.remote_client.is_active() {
-            self.remote_client.project_deletion(cx)
-        } else {
-            self.project_delete_confirm.as_ref().and_then(|id| {
-                self.app_store
-                    .read(cx)
-                    .projects
-                    .iter()
-                    .find(|project| &project.id == id)
-                    .map(|project| (project.name.clone(), self.project_delete_busy))
-            })
-        };
+        let deletion = self.project_delete_confirm.as_ref().and_then(|id| {
+            self.app_store
+                .read(cx)
+                .projects
+                .iter()
+                .find(|project| &project.id == id)
+                .map(|project| (project.name.clone(), self.project_delete_busy))
+        });
         if let Some((project_name, busy)) = deletion {
             let confirm_root = cx.entity();
             let cancel_root = confirm_root.clone();
             overlays.push(
                     ConfirmDialog::new(
                         crate::i18n::tf("format.delete_project", &[("project", project_name.to_string())]),
-                        self.remote_client.project_deletion_error().map(|error| format!("{}\n{}", crate::i18n::text("ui.deleting_this_project_archives_every_chat_and_mission_inside_it_running_ones_are_stopped_f"), error)).unwrap_or_else(|| crate::i18n::text("ui.deleting_this_project_archives_every_chat_and_mission_inside_it_running_ones_are_stopped_f").to_owned()),
+                        crate::i18n::text("ui.deleting_this_project_archives_every_chat_and_mission_inside_it_running_ones_are_stopped_f").to_owned(),
                         crate::i18n::text("ui.delete_project"),
                         crate::i18n::text("ui.archiving"),
                         busy,
@@ -279,8 +235,7 @@ impl NativeRoot {
                         }),
                         Rc::new(move |_, cx| {
                             cancel_root.update(cx, |this, cx| {
-                                if this.remote_client.is_active() { this.remote_client.cancel_delete_project(cx); }
-                                else if !this.project_delete_busy { this.project_delete_confirm = None; cx.notify(); }
+                                if !this.project_delete_busy { this.project_delete_confirm = None; cx.notify(); }
                             });
                         }),
                     )

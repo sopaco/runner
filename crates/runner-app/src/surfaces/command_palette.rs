@@ -317,110 +317,10 @@ pub(crate) struct CommandPaletteState {
     open: bool,
     selection_epoch: u64,
     previous_focus: Option<FocusHandle>,
-    remote_data: Option<(
-        Option<runner_core::companion::Overview>,
-        crate::surfaces::front_page::FrontPageClient,
-    )>,
     _input_subscription: Subscription,
 }
 
-fn remote_palette_items(
-    overview: &runner_core::companion::Overview,
-    client: &crate::surfaces::front_page::FrontPageClient,
-) -> Vec<PaletteItem> {
-    let mut items = palette_items(&[], &[], &[], &[], None)
-        .into_iter()
-        .filter(|item| match item.destination {
-            PaletteDestination::NewChat => client.supports(&["catalog", "startChat"]),
-            PaletteDestination::NewMission => client.supports(&["catalog", "startMission"]),
-            PaletteDestination::NewTerminal => client.supports(&["startShell", "layout"]),
-            _ => false,
-        })
-        .collect::<Vec<_>>();
-    items.extend(
-        overview
-            .missions
-            .iter()
-            .enumerate()
-            .map(|(order, mission)| PaletteItem {
-                kind: PaletteKind::Mission,
-                runtime: None,
-                live: mission.state == runner_core::companion::MissionState::Running,
-                id: mission.id.clone(),
-                label: mission.title.clone(),
-                destination: PaletteDestination::Mission(mission.id.clone()),
-                search_text: mission.title.to_lowercase(),
-                order,
-            }),
-    );
-    let members = overview
-        .missions
-        .iter()
-        .flat_map(|mission| mission.members.iter().map(|member| member.session.as_str()))
-        .collect::<std::collections::HashSet<_>>();
-    items.extend(
-        overview
-            .sessions
-            .iter()
-            .filter(|(id, _)| !members.contains(id.as_str()))
-            .enumerate()
-            .map(|(order, (id, session))| {
-                let runtime = if session.kind == runner_core::companion::SessionKind::Shell {
-                    "shell"
-                } else {
-                    session.runtime.as_deref().unwrap_or_default()
-                };
-                let label = if session.title.is_empty() {
-                    crate::surfaces::roles::logic::runtime_display_name(runtime)
-                } else {
-                    session.title.clone()
-                };
-                PaletteItem {
-                    kind: session_palette_kind(runtime),
-                    runtime: Some(runtime.into()),
-                    live: !matches!(
-                        session.status.status.effective(),
-                        runner_core::companion::Status::Stopped
-                            | runner_core::companion::Status::Error
-                    ),
-                    id: id.clone(),
-                    destination: PaletteDestination::Chat(id.clone()),
-                    search_text: format!(
-                        "{} {}",
-                        label,
-                        session.cwd.as_deref().unwrap_or_default()
-                    )
-                    .to_lowercase(),
-                    label,
-                    order,
-                }
-            }),
-    );
-    items
-}
-
 impl CommandPaletteState {
-    pub(crate) fn set_remote_data(
-        &mut self,
-        data: Option<(
-            Option<runner_core::companion::Overview>,
-            crate::surfaces::front_page::FrontPageClient,
-        )>,
-        cx: &mut Context<Self>,
-    ) {
-        self.remote_data = data;
-        if self.open && self.remote_data.is_some() {
-            self.locale_changed(cx);
-        }
-    }
-
-    pub(crate) fn close_for_target_change(&mut self, cx: &mut Context<Self>) {
-        self.selection_epoch = self.selection_epoch.wrapping_add(1);
-        self.open = false;
-        self.remote_data = None;
-        cx.notify();
-    }
-
     pub(crate) fn new(
         shell: WeakEntity<NativeRoot>,
         app_store: Entity<AppStore>,
@@ -468,7 +368,6 @@ impl CommandPaletteState {
             open: false,
             selection_epoch: 0,
             previous_focus: None,
-            remote_data: None,
             _input_subscription: input_subscription,
         }
     }
@@ -478,20 +377,13 @@ impl CommandPaletteState {
             .get(self.active_index)
             .map(|item| item.destination.clone());
         let store = self.app_store.read(cx);
-        self.items = if let Some((overview, client)) = &self.remote_data {
-            overview
-                .as_ref()
-                .map(|overview| remote_palette_items(overview, client))
-                .unwrap_or_default()
-        } else {
-            palette_items(
-                &store.missions,
-                &store.sessions,
-                &store.roles,
-                &store.crews,
-                store.runner_command_status(),
-            )
-        };
+        self.items = palette_items(
+            &store.missions,
+            &store.sessions,
+            &store.roles,
+            &store.crews,
+            store.runner_command_status(),
+        );
         let filtered = filtered_palette_items(&self.items, &self.query);
         self.active_index = selected
             .and_then(|selected| {
@@ -510,20 +402,13 @@ impl CommandPaletteState {
         self.selection_epoch = self.selection_epoch.wrapping_add(1);
         self.previous_focus = window.focused(cx);
         let store = self.app_store.read(cx);
-        self.items = if let Some((overview, client)) = &self.remote_data {
-            overview
-                .as_ref()
-                .map(|overview| remote_palette_items(overview, client))
-                .unwrap_or_default()
-        } else {
-            palette_items(
-                &store.missions,
-                &store.sessions,
-                &store.roles,
-                &store.crews,
-                store.runner_command_status(),
-            )
-        };
+        self.items = palette_items(
+            &store.missions,
+            &store.sessions,
+            &store.roles,
+            &store.crews,
+            store.runner_command_status(),
+        );
         self.query.clear();
         self.active_index = 0;
         self.list_scroll.set_offset(point(px(0.), px(0.)));
@@ -595,33 +480,10 @@ impl CommandPaletteState {
             return;
         };
         self.selection_epoch = self.selection_epoch.wrapping_add(1);
-        let selection_epoch = self.selection_epoch;
         self.open = false;
         let previous_focus = self.previous_focus.take();
         if let Some(focus) = previous_focus.as_ref() {
             focus.focus(window, cx);
-        }
-        let expected = self
-            .remote_data
-            .as_ref()
-            .map(|(_, client)| client.target.clone())
-            .unwrap_or(crate::surfaces::front_page::FrontPageTarget::Local);
-        if !self
-            .shell
-            .upgrade()
-            .is_some_and(|shell| shell.read(cx).front_page_client(cx).target == expected)
-        {
-            cx.notify();
-            return;
-        }
-        if let Some((_, client)) = &self.remote_data {
-            let current = self.shell.upgrade().is_some_and(|shell| {
-                shell.read(cx).front_page_client(cx).target == client.target && client.valid()
-            });
-            if !current {
-                cx.notify();
-                return;
-            }
         }
         let navigate = move |shell: &mut NativeRoot,
                              window: &mut Window,
@@ -674,41 +536,6 @@ impl CommandPaletteState {
                 }
             }
         };
-        if let Some((_, client)) = &self.remote_data {
-            let client = client.clone();
-            let shell = self.shell.clone();
-            let palette = cx.weak_entity();
-            // Remote navigation refreshes this palette entity.
-            window.defer(cx, move |window, cx| {
-                if !palette
-                    .upgrade()
-                    .is_some_and(|palette| palette.read(cx).selection_epoch == selection_epoch)
-                {
-                    return;
-                }
-                let navigated = shell.upgrade().and_then(|shell| {
-                    shell.update(cx, |shell, shell_cx| {
-                        if shell.front_page_client(shell_cx).target != expected || !client.valid() {
-                            return None;
-                        }
-                        Some(navigate(shell, window, shell_cx))
-                    })
-                });
-                if navigated == Some(false) {
-                    let _ = palette.update(cx, |palette, cx| {
-                        if palette.selection_epoch != selection_epoch {
-                            return;
-                        }
-                        palette.open = true;
-                        palette.previous_focus = previous_focus;
-                        palette.input.read(cx).focus_handle().focus(window, cx);
-                        cx.notify();
-                    });
-                }
-            });
-            cx.notify();
-            return;
-        }
         let navigated = self.shell.upgrade().is_some_and(|shell| {
             shell.update(cx, |shell, shell_cx| navigate(shell, window, shell_cx))
         });
@@ -1254,353 +1081,5 @@ mod localization_tests {
             );
             assert_eq!(PaletteKind::Mission.label(), "任务");
         });
-    }
-}
-
-#[cfg(test)]
-mod remote_isolation_tests {
-    use super::*;
-    use crate::surfaces::remote_client::tests::{
-        add_window, choose_host, enable_front_page, fixture,
-    };
-    use gpui::TestAppContext;
-
-    #[test]
-    fn palette_new_terminal_uses_a_shell_pane_or_tab_and_never_a_chat_drawer() {
-        use crate::surfaces::remote_client::tests::{action_trace, overview};
-        let _theme = crate::theme_snapshot::ThemeGuard::new();
-        for empty_pane in [false, true] {
-            let temp = tempfile::tempdir().unwrap();
-            let mut cx = TestAppContext::single();
-            let (store, fake, _) = fixture(&mut cx, temp.path());
-            enable_front_page(&fake);
-            let mut data = overview();
-            if empty_pane {
-                data.tabs[0].panes = runner_core::companion::Pane::Split {
-                    split: runner_core::companion::SplitDirection::Row,
-                    sizes: [0.5, 0.5],
-                    a: Box::new(runner_core::companion::Pane::Leaf {
-                        session: Some("s".into()),
-                    }),
-                    b: Box::new(runner_core::companion::Pane::Leaf { session: None }),
-                };
-            }
-            fake.set_overview(data);
-            let window = add_window(&mut cx, &store, temp.path(), "palette-shell-pane");
-            window.update(&mut cx, choose_host).unwrap();
-            cx.run_until_parked();
-            let palette = window
-                .read_with(&cx, |root, _| root.command_palette.clone())
-                .unwrap();
-            let mut visual = gpui::VisualTestContext::from_window(window.into(), &cx);
-            visual.update(|window, cx| {
-                palette.update(cx, |palette, cx| {
-                    palette.open(window, cx);
-                    palette.query = "New terminal".into();
-                    assert_eq!(
-                        filtered_palette_items(&palette.items, &palette.query).len(),
-                        1
-                    );
-                    palette.select(0, window, cx);
-                });
-            });
-            visual.run_until_parked();
-            assert_eq!(action_trace(&fake, "startShell").len(), 1);
-            let layouts = action_trace(&fake, "layout");
-            assert_eq!(layouts.len(), 1);
-            assert_eq!(layouts[0]["shells"], serde_json::json!([]));
-            assert_eq!(layouts[0]["target"]["kind"], "tab");
-            if empty_pane {
-                assert_eq!(layouts[0]["target"]["id"], "remote-tab");
-                assert_eq!(layouts[0]["panes"]["b"]["session"], "started-session");
-                assert_eq!(layouts[0]["panes"]["a"]["session"], "s");
-            } else {
-                assert_ne!(layouts[0]["target"]["id"], "remote-tab");
-                assert_eq!(layouts[0]["panes"]["session"], "started-session");
-            }
-        }
-    }
-
-    #[test]
-    fn remote_palette_return_navigates_mission_and_chat_without_reentering_the_palette() {
-        let _theme = crate::theme_snapshot::ThemeGuard::new();
-        let temp = tempfile::tempdir().unwrap();
-        let mut cx = TestAppContext::single();
-        cx.update(|cx| {
-            crate::keymap::install_bindings(cx, &crate::keymap::KeymapOverrides::new(), false)
-        });
-        let (store, fake, _) = fixture(&mut cx, temp.path());
-        crate::surfaces::remote_client::tests::enable_missions(&fake);
-        let window = add_window(&mut cx, &store, temp.path(), "palette-remote-navigation");
-        window.update(&mut cx, choose_host).unwrap();
-        cx.run_until_parked();
-        let palette = window
-            .read_with(&cx, |root, _| root.command_palette.clone())
-            .unwrap();
-        let saved_route = window.read_with(&cx, |root, _| root.route.clone()).unwrap();
-        let mut visual = gpui::VisualTestContext::from_window(window.into(), &cx);
-        window
-            .update(&mut visual, |root, window, cx| {
-                window.activate_window();
-                root.root_focus.focus(window, cx);
-            })
-            .unwrap();
-        visual.run_until_parked();
-        let local_calls = fake.local_call_count();
-        for (query, expected) in [
-            (
-                "Remote mission",
-                crate::surfaces::remote_client::RemoteItem::Mission("remote-mission".into()),
-            ),
-            (
-                "Remote session",
-                crate::surfaces::remote_client::RemoteItem::Tab("remote-tab".into()),
-            ),
-        ] {
-            window
-                .update(&mut visual, |root, window, cx| {
-                    root.root_focus.focus(window, cx);
-                })
-                .unwrap();
-            visual.simulate_keystrokes(&crate::keymap::platform_default("cmd-k"));
-            visual.run_until_parked();
-            palette.update(&mut visual, |palette, cx| {
-                assert!(palette.open);
-                palette
-                    .input
-                    .update(cx, |input, cx| input.set_text(query, cx));
-            });
-            visual.run_until_parked();
-            palette.read_with(&visual, |palette, _| {
-                assert_eq!(
-                    filtered_palette_items(&palette.items, &palette.query).len(),
-                    1
-                )
-            });
-            visual.simulate_keystrokes("enter");
-            visual.run_until_parked();
-            window
-                .read_with(&visual, |root, _| {
-                    assert_eq!(root.remote_client.workspace().unwrap().computer.id, "host");
-                    assert!(
-                        root.remote_client.workspace().unwrap().active.as_ref() == Some(&expected),
-                        "{query}"
-                    );
-                    assert_eq!(root.route, saved_route);
-                })
-                .unwrap();
-            assert!(!palette.read_with(&visual, |palette, _| palette.open));
-        }
-        assert_eq!(fake.local_call_count(), local_calls);
-    }
-
-    #[test]
-    fn queued_remote_palette_navigation_is_cancelled_by_target_change_or_reopen() {
-        let _theme = crate::theme_snapshot::ThemeGuard::new();
-        for cancel in ["target", "reopen", "generation"] {
-            let temp = tempfile::tempdir().unwrap();
-            let mut cx = TestAppContext::single();
-            let (store, fake, clients) = fixture(&mut cx, temp.path());
-            crate::surfaces::remote_client::tests::enable_missions(&fake);
-            let window = add_window(&mut cx, &store, temp.path(), "palette-stale-navigation");
-            window.update(&mut cx, choose_host).unwrap();
-            cx.run_until_parked();
-            let (shell, palette, saved_route) = window
-                .update(&mut cx, |root, _, cx| {
-                    (
-                        cx.entity(),
-                        root.command_palette.clone(),
-                        root.route.clone(),
-                    )
-                })
-                .unwrap();
-            let mut visual = gpui::VisualTestContext::from_window(window.into(), &cx);
-            visual.update(|window, cx| {
-                palette.update(cx, |palette, cx| {
-                    palette.open(window, cx);
-                    palette.query = "Remote mission".into();
-                    assert_eq!(
-                        filtered_palette_items(&palette.items, &palette.query).len(),
-                        1
-                    );
-                    palette.select(0, window, cx);
-                });
-                match cancel {
-                    "target" => {
-                        shell.update(cx, |root, cx| root.return_to_this_computer(window, cx))
-                    }
-                    "reopen" => palette.update(cx, |palette, cx| palette.open(window, cx)),
-                    _ => clients.update(cx, |clients, _| clients.invalidate_capabilities("host")),
-                }
-            });
-            visual.run_until_parked();
-            window
-                .read_with(&visual, |root, cx| {
-                    assert_eq!(root.route, saved_route);
-                    assert!(root.mission_workspace.read(cx).mission_id.is_none());
-                    if cancel == "target" {
-                        assert!(root.remote_client.is_local());
-                    } else {
-                        assert!(
-                            root.remote_client.workspace().unwrap().active
-                                == Some(crate::surfaces::remote_client::RemoteItem::Tab(
-                                    "remote-tab".into()
-                                ))
-                        );
-                    }
-                })
-                .unwrap();
-            assert_eq!(
-                palette.read_with(&visual, |palette, _| palette.open),
-                cancel == "reopen"
-            );
-        }
-    }
-
-    #[test]
-    fn local_palette_destination_keeps_its_synchronous_dispatch() {
-        let _theme = crate::theme_snapshot::ThemeGuard::new();
-        let temp = tempfile::tempdir().unwrap();
-        let mut cx = TestAppContext::single();
-        let (store, _, _) = fixture(&mut cx, temp.path());
-        let window = add_window(&mut cx, &store, temp.path(), "palette-local-dispatch");
-        let (shell, palette) = window
-            .update(&mut cx, |root, _, cx| {
-                (cx.entity(), root.command_palette.clone())
-            })
-            .unwrap();
-        let mut visual = gpui::VisualTestContext::from_window(window.into(), &cx);
-        visual.update(|window, cx| {
-            palette.update(cx, |palette, cx| {
-                palette.open(window, cx);
-                palette.query = "New mission".into();
-                assert_eq!(
-                    filtered_palette_items(&palette.items, &palette.query).len(),
-                    1
-                );
-                palette.select(0, window, cx);
-            });
-            assert!(shell.read(cx).mission_launcher_open(cx));
-        });
-        visual.run_until_parked();
-        assert!(!palette.read_with(&visual, |palette, _| palette.open));
-    }
-
-    #[test]
-    fn disappeared_remote_chat_keeps_the_palette_query_and_focus_for_retry() {
-        let _theme = crate::theme_snapshot::ThemeGuard::new();
-        let temp = tempfile::tempdir().unwrap();
-        let mut cx = TestAppContext::single();
-        let (store, fake, clients) = fixture(&mut cx, temp.path());
-        crate::surfaces::remote_client::tests::enable_missions(&fake);
-        let window = add_window(&mut cx, &store, temp.path(), "palette-missing-chat");
-        window.update(&mut cx, choose_host).unwrap();
-        cx.run_until_parked();
-        let (shell, palette) = window
-            .update(&mut cx, |root, _, cx| {
-                (cx.entity(), root.command_palette.clone())
-            })
-            .unwrap();
-        let mut visual = gpui::VisualTestContext::from_window(window.into(), &cx);
-        visual.update(|window, cx| {
-            palette.update(cx, |palette, cx| {
-                palette.open(window, cx);
-                palette.query = "Remote session".into();
-                palette
-                    .input
-                    .update(cx, |input, cx| input.set_text("Remote session", cx));
-                assert_eq!(
-                    filtered_palette_items(&palette.items, &palette.query).len(),
-                    1
-                );
-                palette.select(0, window, cx);
-            });
-            clients.update(cx, |clients, cx| {
-                let overview = clients.overviews.get_mut("host").unwrap();
-                overview.sessions.remove("s");
-                overview.tabs.clear();
-                cx.notify();
-            });
-            shell.update(cx, |shell, cx| shell.sync_remote_state(cx));
-        });
-        visual.run_until_parked();
-        visual.update(|window, cx| {
-            let palette = palette.read(cx);
-            assert!(palette.open);
-            assert_eq!(palette.query, "Remote session");
-            assert_eq!(palette.input.read(cx).text(), "Remote session");
-            assert!(palette.input.read(cx).focus_handle().is_focused(window));
-        });
-        window
-            .read_with(&visual, |root, _| assert!(root.remote_client.is_active()))
-            .unwrap();
-    }
-
-    #[test]
-    fn missing_remote_overview_never_exposes_local_items_or_installs_the_cli() {
-        let _theme = crate::theme_snapshot::ThemeGuard::new();
-        let temp = tempfile::tempdir().unwrap();
-        let mut cx = TestAppContext::single();
-        let (store, fake, clients) = fixture(&mut cx, temp.path());
-        enable_front_page(&fake);
-        let window = add_window(&mut cx, &store, temp.path(), "palette-isolation");
-        window.update(&mut cx, choose_host).unwrap();
-        cx.run_until_parked();
-        let palette = window
-            .read_with(&cx, |root, _| root.command_palette.clone())
-            .unwrap();
-        window
-            .update(&mut cx, |root, window, cx| {
-                root.remote_client
-                    .refresh_remote_palette(&root.command_palette, cx);
-                palette.update(cx, |palette, cx| palette.open(window, cx));
-            })
-            .unwrap();
-        assert!(palette.read_with(&cx, |palette, _| !palette.items.is_empty()));
-        clients.update(&mut cx, |clients, _| {
-            clients.overviews.remove("host");
-        });
-        window
-            .update(&mut cx, |root, window, cx| {
-                root.remote_client
-                    .refresh_remote_palette(&root.command_palette, cx);
-                palette.update(cx, |palette, cx| {
-                    assert!(palette.remote_data.is_some());
-                    assert!(palette.items.is_empty());
-                    palette.dismiss(window, cx);
-                    palette.open(window, cx);
-                    assert!(palette.items.is_empty());
-                });
-            })
-            .unwrap();
-        let local_calls = fake.local_call_count();
-        window
-            .update(&mut cx, |root, _, cx| {
-                root.install_runner_command(cx);
-                root.uninstall_runner_command(cx);
-            })
-            .unwrap();
-        let mut visual = gpui::VisualTestContext::from_window(window.into(), &cx);
-        visual.update(|window, cx| {
-            palette.update(cx, |palette, cx| {
-                // A callback retained from the local target must also be refused.
-                palette.remote_data = None;
-                palette.items = palette_items(&[], &[], &[], &[], None);
-                palette.items[0].destination = PaletteDestination::InstallRunnerCommand;
-                let index = palette
-                    .items
-                    .iter()
-                    .position(|item| item.destination == PaletteDestination::InstallRunnerCommand)
-                    .unwrap();
-                palette.select(index, window, cx);
-            });
-        });
-        visual.run_until_parked();
-        assert_eq!(fake.local_call_count(), local_calls);
-        window
-            .read_with(&visual, |root, _| {
-                assert!(root.remote_client.is_active());
-            })
-            .unwrap();
     }
 }

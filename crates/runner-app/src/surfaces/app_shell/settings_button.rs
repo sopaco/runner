@@ -2,9 +2,6 @@ use super::*;
 
 impl NativeRoot {
     pub(super) fn render_settings_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.remote_client.is_active() {
-            return div().into_any_element();
-        }
         let zoom = self.settings(cx).app_zoom;
         div()
             .id("sidebar-settings")
@@ -37,42 +34,5 @@ impl NativeRoot {
                     .text_color(theme::muted()),
             )
             .into_any_element()
-    }
-}
-
-#[cfg(test)]
-mod remote_isolation_tests {
-    use crate::surfaces::remote_client::tests::{
-        add_window, choose_host, enable_front_page, fixture,
-    };
-    use gpui::{TestAppContext, VisualTestContext};
-
-    #[test]
-    fn remote_sidebar_hides_settings_and_refuses_stale_sign_out() {
-        let _theme = crate::theme_snapshot::ThemeGuard::new();
-        let temp = tempfile::tempdir().unwrap();
-        let mut cx = TestAppContext::single();
-        let (store, fake, _) = fixture(&mut cx, temp.path());
-        enable_front_page(&fake);
-        let window = add_window(&mut cx, &store, temp.path(), "remote-footer");
-        let mut visual = VisualTestContext::from_window(window.into(), &cx);
-        visual.run_until_parked();
-        assert!(visual.debug_bounds("SIDEBAR_SETTINGS").is_some());
-        window
-            .update(&mut visual, |root, window, cx| {
-                choose_host(root, window, cx)
-            })
-            .unwrap();
-        visual.run_until_parked();
-        assert!(visual.debug_bounds("SIDEBAR_SETTINGS").is_none());
-        let before = fake.local_call_count();
-        window
-            .update(&mut visual, |root, _, cx| {
-                root.confirm_sign_out(cx);
-                assert!(!root.settings_page.remote.confirm);
-            })
-            .unwrap();
-        visual.run_until_parked();
-        assert_eq!(fake.local_call_count(), before);
     }
 }

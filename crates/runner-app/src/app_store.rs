@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::{FutureExt as _, StreamExt as _};
-use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Global, Task};
+use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Global};
 use runner_core::protocol::crew::CrewListItem;
 use runner_core::protocol::mission::MissionSummary;
 use runner_core::protocol::model::Role;
@@ -101,8 +101,6 @@ impl StoreRefreshKind {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct StoreRevisions {
-    pub(crate) remote_notice: u64,
-    pub(crate) remote_enrollment: u64,
     pub(crate) terminal_wake: u64,
     pub(crate) sessions: u64,
     pub(crate) roles: u64,
@@ -258,32 +256,7 @@ pub(crate) struct TerminalUpdates;
 
 impl EventEmitter<String> for TerminalUpdates {}
 
-#[derive(Clone, serde::Deserialize)]
-pub(crate) struct RemotePairing {
-    pub name: String,
-    pub fingerprint: String,
-}
-
-impl EventEmitter<RemotePairing> for AppStore {}
-
-enum RemoteUpdate {
-    Status(runner_core::remote::RemoteStatus),
-    Trust(runner_core::remote::RemoteTrust),
-    Paired(RemotePairing),
-}
-
-#[derive(Clone)]
-pub(crate) enum RemoteWarning {
-    Stopped(Box<runner_core::remote::RemoteStatus>),
-    PinLocked,
-}
-
 pub(crate) struct AppStore {
-    pub(crate) remote_clients: Entity<crate::surfaces::remote_client::model::ClientState>,
-    pub(crate) remote_status: Option<runner_core::remote::RemoteStatus>,
-    pub(crate) enrollment_requests: Arc<crate::surfaces::settings::remote::EnrollmentRequests>,
-    pub(crate) remote_trust: Option<runner_core::remote::RemoteTrust>,
-    pub(crate) remote_warning: Option<RemoteWarning>,
     pub(crate) terminal_updates: Entity<TerminalUpdates>,
     terminal_labels: BTreeMap<
         String,
@@ -332,67 +305,9 @@ pub(crate) struct AppStore {
     pub(crate) daemon_notice: Option<runner_app::lifecycle::DaemonNotice>,
     pub(crate) stopped_session_count: usize,
     pub(crate) restarted_sessions: Option<usize>,
-    _remote_events_task: Task<()>,
 }
 
 impl AppStore {
-    pub(crate) fn remote_signed_in(&self) -> bool {
-        self.remote_status
-            .as_ref()
-            .is_some_and(crate::surfaces::settings::remote::account::signed_in)
-    }
-
-    fn apply_remote_update(&mut self, update: RemoteUpdate, live: bool) {
-        let was_signed_in = self.remote_signed_in();
-        let warning = match update {
-            RemoteUpdate::Paired(_) => return,
-            RemoteUpdate::Status(status) => {
-                if live
-                    && self.remote_status.as_ref().is_some_and(|previous| {
-                        matches!(
-                            previous.state,
-                            runner_core::remote::RemoteState::Enrolling { .. }
-                                | runner_core::remote::RemoteState::Confirming { .. }
-                        )
-                    })
-                    && !matches!(
-                        status.state,
-                        runner_core::remote::RemoteState::Enrolling { .. }
-                            | runner_core::remote::RemoteState::Confirming { .. }
-                    )
-                {
-                    self.revisions.remote_enrollment =
-                        self.revisions.remote_enrollment.wrapping_add(1);
-                }
-                let warning = (live
-                    && crate::surfaces::settings::remote::warn_transition(
-                        self.remote_status.as_ref(),
-                        &status,
-                    ))
-                .then(|| RemoteWarning::Stopped(Box::new(status.clone())));
-                self.remote_status = Some(status);
-                warning
-            }
-            RemoteUpdate::Trust(trust) => {
-                let warning = (live
-                    && crate::surfaces::settings::remote::warn_pin_lock(
-                        self.remote_trust.as_ref(),
-                        &trust,
-                    ))
-                .then_some(RemoteWarning::PinLocked);
-                self.remote_trust = Some(trust);
-                warning
-            }
-        };
-        if self.remote_signed_in() != was_signed_in {
-            self.revisions.shell_settings = self.revisions.shell_settings.wrapping_add(1);
-        }
-        if let Some(warning) = warning {
-            self.remote_warning = Some(warning);
-            self.revisions.remote_notice = self.revisions.remote_notice.wrapping_add(1);
-        }
-    }
-
     pub(crate) fn new(
         #[cfg(not(test))] host: runner_app::bootstrap::ClientHost,
         #[cfg(test)] core: runner_daemon::AppCore,
@@ -410,9 +325,6 @@ impl AppStore {
         };
         #[cfg(test)]
         crate::test_support::drain_tasks_when_app_drops(cx);
-        let remote_clients = cx.new(|cx| {
-            crate::surfaces::remote_client::model::ClientState::new(host.client.clone(), cx)
-        });
         let terminal_updates = cx.new(|_| TerminalUpdates);
         let (wake_tx, mut wake_rx) = futures::channel::mpsc::unbounded::<String>();
         let waker: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |id| {
@@ -591,92 +503,7 @@ impl AppStore {
         if let Err(error) = bridge.attach_live_sessions() {
             eprintln!("attach live terminals: {error}");
         }
-        let (remote_tx, mut remote_rx) = futures::channel::mpsc::unbounded();
-        let remote_client = host.client.clone();
-        let mut remote_events = remote_client.subscribe();
-        let remote_events_task = cx.background_spawn(async move {
-            if let Ok(status) = remote_client.remote_status() {
-                let _ = remote_tx.unbounded_send((RemoteUpdate::Status(status), false));
-            }
-            if let Ok(trust) = remote_client.remote_trust() {
-                let _ = remote_tx.unbounded_send((RemoteUpdate::Trust(trust), false));
-            }
-            loop {
-                match remote_events.recv().await {
-                    Ok(event) if event.name == "remote/status" => {
-                        if let Ok(status) = serde_json::from_value(event.payload) {
-                            if remote_tx
-                                .unbounded_send((RemoteUpdate::Status(status), true))
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    }
-                    Ok(event) if event.name == "remote/paired" => {
-                        if let Ok(pairing) = serde_json::from_value(event.payload) {
-                            if remote_tx
-                                .unbounded_send((RemoteUpdate::Paired(pairing), true))
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    }
-                    Ok(event) if event.name == "remote/trust" => {
-                        if let Ok(trust) = serde_json::from_value(event.payload) {
-                            if remote_tx
-                                .unbounded_send((RemoteUpdate::Trust(trust), true))
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    }
-                    Ok(event) if event.name == "daemon/reconnected" => {
-                        if let Ok(trust) = remote_client.remote_trust() {
-                            let _ = remote_tx.unbounded_send((RemoteUpdate::Trust(trust), false));
-                        }
-                        if let Ok(status) = remote_client.remote_status() {
-                            let _ = remote_tx.unbounded_send((RemoteUpdate::Status(status), false));
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(runner_core::protocol::EventError::Lagged(_)) => {
-                        if let Ok(trust) = remote_client.remote_trust() {
-                            let _ = remote_tx.unbounded_send((RemoteUpdate::Trust(trust), false));
-                        }
-                        if let Ok(status) = remote_client.remote_status() {
-                            let _ = remote_tx.unbounded_send((RemoteUpdate::Status(status), false));
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-        cx.spawn(async move |weak, cx| {
-            while let Some((update, live)) = remote_rx.next().await {
-                if weak
-                    .update(cx, |store, cx| {
-                        match update {
-                            RemoteUpdate::Paired(pairing) => cx.emit(pairing),
-                            update => store.apply_remote_update(update, live),
-                        }
-                        cx.notify();
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .detach();
         let mut store = Self {
-            remote_clients,
-            remote_status: None,
-            enrollment_requests: Arc::default(),
-            remote_trust: None,
-            remote_warning: None,
             terminal_updates,
             terminal_labels: BTreeMap::new(),
             launcher_tabs_pending: Arc::default(),
@@ -718,7 +545,6 @@ impl AppStore {
             daemon_notice: None,
             stopped_session_count: 0,
             restarted_sessions: None,
-            _remote_events_task: remote_events_task,
         };
         if let Some(error) = settings_error {
             store.record_error(error);
@@ -1166,91 +992,6 @@ pub(crate) fn global_app_store(cx: &App) -> Entity<AppStore> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn remote_status_shows_signed_in_surfaces_and_wakes_every_window() {
-        use runner_core::remote::{RemoteState, RemoteStatus, StopReason};
-        let temp = tempfile::tempdir().unwrap();
-        let mut cx = gpui::TestAppContext::single();
-        let store = super::test_lifecycle_store(&mut cx, temp.path());
-        cx.run_until_parked();
-        store.update(&mut cx, |store, _| {
-            for state in [
-                RemoteState::Connecting { attempt: 0 },
-                RemoteState::Connected {
-                    since: chrono::Utc::now(),
-                },
-                RemoteState::Reconnecting {
-                    attempt: 1,
-                    next_retry_at: chrono::Utc::now(),
-                },
-                RemoteState::Paused,
-                RemoteState::Stopped {
-                    reason: StopReason::Removed,
-                },
-                RemoteState::Off,
-            ] {
-                let previous = store.remote_signed_in();
-                let revision = store.revisions.shell_settings;
-                let status = RemoteStatus {
-                    state,
-                    host_id: Some("old-host".into()),
-                    account: Some(Default::default()),
-                    ..Default::default()
-                };
-                let signed_in = crate::surfaces::settings::remote::account::signed_in(&status);
-                store.apply_remote_update(super::RemoteUpdate::Status(status), false);
-                assert_eq!(store.remote_signed_in(), signed_in);
-                assert_eq!(
-                    store.revisions.shell_settings,
-                    revision + u64::from(previous != signed_in)
-                );
-            }
-        });
-    }
-
-    #[test]
-    fn restored_pin_lock_is_silent_on_startup_and_reconnect_but_later_locks_notify() {
-        use runner_core::remote::RemoteTrust;
-        let mut cx = gpui::TestAppContext::single();
-        let temp = tempfile::tempdir().unwrap();
-        let store = super::test_lifecycle_store(&mut cx, temp.path());
-        store.update(&mut cx, |store, _| {
-            let unlocked = RemoteTrust {
-                fingerprint: Some("630d cd29 66c4 3366 9112".into()),
-                pin_set: true,
-                ..Default::default()
-            };
-            let locked = RemoteTrust {
-                pin_locked: true,
-                ..unlocked.clone()
-            };
-            let baseline = store.revisions.remote_notice;
-            for cycle in 0..2 {
-                // Startup/reconnect reads the fast default while restore is held,
-                // then receives the restored state through the event stream.
-                store
-                    .apply_remote_update(super::RemoteUpdate::Trust(RemoteTrust::default()), false);
-                store.apply_remote_update(super::RemoteUpdate::Trust(locked.clone()), true);
-                assert!(store.remote_trust.as_ref().unwrap().pin_locked);
-                assert_eq!(store.revisions.remote_notice, baseline + cycle);
-                store.apply_remote_update(super::RemoteUpdate::Trust(locked.clone()), true);
-                assert_eq!(store.revisions.remote_notice, baseline + cycle);
-                store.apply_remote_update(super::RemoteUpdate::Trust(unlocked.clone()), true);
-                store.apply_remote_update(super::RemoteUpdate::Trust(locked.clone()), true);
-                assert_eq!(store.revisions.remote_notice, baseline + cycle + 1);
-                assert!(matches!(
-                    store.remote_warning,
-                    Some(super::RemoteWarning::PinLocked)
-                ));
-            }
-            // A fully restored snapshot at reconnect is silent as well.
-            store.apply_remote_update(super::RemoteUpdate::Trust(unlocked), false);
-            assert_eq!(store.revisions.remote_notice, baseline + 2);
-            store.apply_remote_update(super::RemoteUpdate::Trust(locked), true);
-            assert_eq!(store.revisions.remote_notice, baseline + 3);
-        });
-    }
 
     #[test]
     fn working_count_excludes_busy_shells_and_uses_effective_mission_runtime() {

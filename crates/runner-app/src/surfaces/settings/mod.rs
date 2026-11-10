@@ -6,7 +6,6 @@ pub(crate) mod diagnostics;
 pub(crate) mod mcp;
 pub(crate) mod notifications;
 pub(crate) mod page;
-pub(crate) mod remote;
 pub(crate) mod skills;
 pub(crate) mod theme_preview;
 #[cfg(target_os = "macos")]

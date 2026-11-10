@@ -7,7 +7,6 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let remote = self.front_page_client(cx).is_remote();
         let Some(mut draft) = self.front_page_layout().cloned() else {
             return;
         };
@@ -24,13 +23,8 @@ impl NativeRoot {
             cx.notify();
             return;
         }
-        if !remote {
-            *self.tabs.active_mut().unwrap() = draft.clone();
-        }
-        let saved = self.save_workspace_layout(draft, false, cx);
-        if remote {
-            return;
-        }
+        *self.tabs.active_mut().unwrap() = draft.clone();
+        let saved = self.save_workspace_layout(draft, cx);
         let result = saved
             .and_then(|_| self.reload_tabs(cx))
             .and_then(|_| self.ensure_active_tab_attached(window, cx))
@@ -65,47 +59,31 @@ impl NativeRoot {
         if self.launcher_session_pending(session_id, cx) {
             return;
         }
-        let remote = self.front_page_client(cx).is_remote();
-        if !remote
-            && self
-                .tabs
-                .active()
-                .is_some_and(|layout| layout.all_session_ids().as_slice() == [session_id])
+        if self
+            .tabs
+            .active()
+            .is_some_and(|layout| layout.all_session_ids().as_slice() == [session_id])
         {
             self.close_terminal_tab(session_id, window, cx);
             return;
         }
-        if !remote {
-            self.terminal_close_confirm = None;
-            if !self.stopping_sessions.insert(session_id.to_owned()) {
-                return;
-            }
-            self.chat_error = None;
-        }
-        let Some((operation, close_operation)) =
-            WorkspaceAction::close(self, session_id, Some(pane_id), false, cx)
-        else {
+        self.terminal_close_confirm = None;
+        if !self.stopping_sessions.insert(session_id.to_owned()) {
             return;
-        };
+        }
+        self.chat_error = None;
+        let client = self.front_page_client(cx);
         let target = session_id.to_owned();
         let pane_id = pane_id.to_owned();
-        let close = cx.background_spawn(async move { close_operation() });
-        let origin_epoch = self.remote_client.ui.epoch;
+        let close_target = target.clone();
+        let close = cx.background_spawn(async move {
+            client
+                .close(&close_target)
+                .map_err(|error| error.to_string())
+        });
         cx.spawn_in(window, async move |weak, cx| {
             let result = close.await;
             let _ = weak.update_in(cx, |this, window, cx| {
-                let Some(result) =
-                    WorkspaceAction::complete(this, operation, result, |done| done, cx)
-                else {
-                    return;
-                };
-                let result = result.map(drop);
-                if this.remote_client.ui.epoch != origin_epoch {
-                    this.stopping_sessions.remove(&target);
-                    this.chat_transitions.remove(&target);
-                    cx.notify();
-                    return;
-                }
                 this.stopping_sessions.remove(&target);
                 match result {
                     Ok(()) => {
@@ -141,14 +119,6 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) {
         if self.launcher_session_pending(session_id, cx) {
-            return;
-        }
-        if self.remote_client.is_active() {
-            if let Some(layout) = self.front_page_layout() {
-                let target = archive_chat_pane_target(layout, pane_id, session_id);
-                TerminalCloseConfirm::open(&mut self.terminal_close_confirm, target, window, cx);
-                cx.notify();
-            }
             return;
         }
 
@@ -278,46 +248,27 @@ impl NativeRoot {
         if self.launcher_session_pending(session_id, cx) {
             return;
         }
-        let remote = self.front_page_client(cx).is_remote();
-        if !remote {
-            self.terminal_close_confirm = None;
-            if !self.stopping_sessions.insert(session_id.to_owned()) {
-                return;
-            }
-            self.prepare_tab_close(&[session_id.to_owned()], cx);
-        }
-        let plan = (!remote).then(|| {
-            vec![(
-                session_id.to_owned(),
-                crate::surfaces::front_page::client::ArchiveSessionOperation::CloseTerminal,
-            )]
-        });
-        let Some((operation, close_operation)) =
-            WorkspaceAction::archive(self, vec![session_id.to_owned()], plan, None, cx)
-        else {
+        self.terminal_close_confirm = None;
+        if !self.stopping_sessions.insert(session_id.to_owned()) {
             return;
-        };
+        }
+        self.prepare_tab_close(&[session_id.to_owned()], cx);
+        let client = self.front_page_client(cx);
+        let plan = vec![(
+            session_id.to_owned(),
+            crate::surfaces::front_page::client::ArchiveSessionOperation::CloseTerminal,
+        )];
         let target = session_id.to_owned();
-        let close = cx.background_spawn(async move { close_operation() });
-        let origin_epoch = self.remote_client.ui.epoch;
+        let close = cx.background_spawn(async move {
+            let (removed, error) = client.archive_sessions(plan);
+            error.map_or(Ok(removed), Err)
+        });
         cx.spawn_in(window, async move |weak, cx| {
             let result = close.await;
             let _ = weak.update_in(cx, |this, window, cx| {
-                let Some(result) =
-                    WorkspaceAction::complete(this, operation, result, |done| done.completion, cx)
-                else {
-                    return;
-                };
-                let result = result.and_then(|done| done.error.map_or(Ok(()), Err));
-                if this.remote_client.ui.epoch != origin_epoch {
-                    this.stopping_sessions.remove(&target);
-                    this.chat_transitions.remove(&target);
-                    cx.notify();
-                    return;
-                }
                 this.stopping_sessions.remove(&target);
                 match result {
-                    Ok(()) => {
+                    Ok(_) => {
                         this.attached.remove(&target);
                         this.session_exit_codes.remove(&target);
                         this.refresh_sessions(cx);
@@ -352,41 +303,6 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.remote_client.is_active() {
-            if let Some(tab) = tab_id {
-                self.select_remote_item(
-                    crate::surfaces::remote_client::RemoteItem::Tab(tab.into()),
-                    cx,
-                );
-            }
-            let terminals = session_ids
-                .iter()
-                .filter(|id| {
-                    self.front_page_session(id, cx)
-                        .is_some_and(|session| session.agent_runtime == "shell")
-                })
-                .count();
-            let Some(confirmation_body) = super::super::sidebar::archive_confirmation_counts(
-                session_ids.len() - terminals,
-                terminals,
-            ) else {
-                self.remote_archive_sessions(session_ids, cx);
-                return;
-            };
-            TerminalCloseConfirm::open(
-                &mut self.terminal_close_confirm,
-                TerminalCloseTarget::ArchiveAll {
-                    session_ids,
-                    source,
-                    confirmation_body,
-                },
-                window,
-                cx,
-            );
-            cx.notify();
-            return;
-        }
-
         let Some(confirmation_body) = super::super::sidebar::archive_all_confirmation_body(
             &session_ids,
             &self.app_store.read(cx).sessions,

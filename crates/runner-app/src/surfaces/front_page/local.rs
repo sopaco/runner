@@ -8,7 +8,6 @@ pub(super) fn resume_mission(
     use runner_core::protocol::model::SessionStatus;
     let mut sessions = daemon.session_list(mission)?;
     let mut first_error = None;
-    let mut resumed = Vec::new();
     for candidate in sessions.clone() {
         let already_running = sessions
             .iter()
@@ -18,7 +17,7 @@ pub(super) fn resume_mission(
             continue;
         }
         match daemon.session_resume(&candidate.session.id, Some(size.0), Some(size.1)) {
-            Ok(session) => resumed.push(session.id),
+            Ok(_) => {}
             Err(error) => {
                 let message = error.to_string();
                 if super::client::is_concurrent_resume_error(&message) {
@@ -41,7 +40,6 @@ pub(super) fn resume_mission(
         }
     }
     Ok(super::client::MissionResume {
-        sessions: resumed,
         local_sessions: sessions,
         error: first_error,
     })

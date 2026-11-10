@@ -12,8 +12,18 @@ use crate::*;
 
 impl MissionWorkspace {
     pub(super) fn mission_composer_roster(&self) -> Vec<ComposerRosterEntry> {
-        self.presentation
-            .composer_roster(self.mission_id.as_deref(), &self.sessions, &self.roster)
+        self.roster
+            .iter()
+            .map(|member| ComposerRosterEntry {
+                handle: member.slot.slot_handle.clone(),
+                role: member.role.handle.clone(),
+                runtime: member
+                    .slot
+                    .runtime_override
+                    .clone()
+                    .unwrap_or_else(|| member.role.runtime.clone()),
+            })
+            .collect()
     }
 
     fn composer_popup_content(
@@ -130,7 +140,7 @@ impl MissionWorkspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let roster = self.mission_composer_roster();
-        let placeholder = self.presentation.composer_placeholder(&self.roster);
+        let placeholder = mission_composer_placeholder(&self.roster);
         let disabled = self.mission_composer_roster().is_empty() || self.composer_posting;
         self.composer_input.update(cx, |input, cx| {
             input.set_placeholder(placeholder, cx);
@@ -372,11 +382,9 @@ impl MissionWorkspace {
         let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
-        if !self.remote_supports(&["post"])
-            || (self.client.is_remote()
-                && !self
-                    .mission_view()
-                    .is_some_and(|mission| mission.status == MissionStatus::Running))
+        if self
+            .mission_view()
+            .is_some_and(|mission| mission.status != MissionStatus::Running)
             || self.mission_composer_roster().is_empty()
             || self.composer_posting
             || self.secondary_state(cx).secondary
@@ -414,14 +422,11 @@ impl MissionWorkspace {
             return;
         }
         self.composer_posting = true;
-        if !self.client.is_remote() {
-            self.composer_input
-                .update(cx, |input, input_cx| input.set_disabled(true, input_cx));
-        }
+        self.composer_input
+            .update(cx, |input, input_cx| input.set_disabled(true, input_cx));
         cx.notify();
         let generation = self.generation;
         let core = self.client.clone();
-        let guard = core.clone();
         let task = cx.background_spawn(async move {
             core.post(
                 mission_id.clone(),
@@ -439,15 +444,13 @@ impl MissionWorkspace {
                     .ok()
                     .is_some_and(|mission_id| this.is_current(mission_id, generation))
                     || result.is_err() && this.generation == generation;
-                if !current || !guard.valid() {
+                if !current {
                     return;
                 }
                 this.composer_posting = false;
-                if !guard.is_remote() {
-                    this.composer_input.update(cx, |input, input_cx| {
-                        input.set_disabled(this.roster.is_empty(), input_cx)
-                    });
-                }
+                this.composer_input.update(cx, |input, input_cx| {
+                    input.set_disabled(this.roster.is_empty(), input_cx)
+                });
                 match result {
                     Ok(_) => {
                         this.composer = ComposerState::default();
@@ -477,48 +480,5 @@ fn mission_composer_placeholder(roster: &[SlotWithRole]) -> &'static str {
         crate::i18n::text("ui.add_a_role_to_start_messaging")
     } else {
         crate::i18n::text("ui.message_everyone_handle_to_address_one")
-    }
-}
-
-impl remote::MissionPresentation {
-    pub(super) fn composer_roster(
-        &self,
-        mission_id: Option<&str>,
-        sessions: &[SessionRow],
-        roster: &[SlotWithRole],
-    ) -> Vec<ComposerRosterEntry> {
-        if self.is_remote() {
-            return self
-                .members(mission_id, sessions)
-                .into_iter()
-                .map(|member| ComposerRosterEntry {
-                    handle: member.handle,
-                    role: String::new(),
-                    runtime: member.runtime,
-                })
-                .collect();
-        }
-        roster
-            .iter()
-            .map(|member| ComposerRosterEntry {
-                handle: member.slot.slot_handle.clone(),
-                role: member.role.handle.clone(),
-                runtime: member
-                    .slot
-                    .runtime_override
-                    .clone()
-                    .unwrap_or_else(|| member.role.runtime.clone()),
-            })
-            .collect()
-    }
-}
-
-impl remote::MissionPresentation {
-    pub(super) fn composer_placeholder(&self, roster: &[SlotWithRole]) -> &'static str {
-        if self.is_remote() {
-            crate::i18n::text("ui.message_everyone_handle_to_address_one")
-        } else {
-            mission_composer_placeholder(roster)
-        }
     }
 }

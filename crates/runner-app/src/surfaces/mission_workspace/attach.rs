@@ -18,9 +18,6 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.presentation.is_remote() {
-            return;
-        }
         self.active = true;
         let _ = self.core(cx).window_set_mission(
             &self.window_label,
@@ -309,9 +306,6 @@ impl MissionWorkspace {
     }
 
     pub(crate) fn current_mission_terminal_size(&self, window: &Window, cx: &App) -> (u16, u16) {
-        if let Some(size) = self.presentation.terminal_size(&self.active_tab) {
-            return size;
-        }
         let measured = match &self.active_tab {
             MissionTab::Session(session_id) => self
                 .attached
@@ -343,9 +337,6 @@ impl MissionWorkspace {
     }
 
     pub(crate) fn schedule_mission_grid_hint(&mut self, window: &Window, cx: &mut Context<Self>) {
-        if self.presentation.is_remote() {
-            return;
-        }
         if !self.is_active(cx) || self.secondary || self.grid_hint_pending {
             return;
         }
@@ -379,10 +370,6 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
-        if self.presentation.is_remote() {
-            self.remote_navigation_changed(cx);
-            return Ok(());
-        }
         if self.archived() {
             return Ok(());
         }
@@ -437,9 +424,6 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
-        if self.presentation.is_remote() {
-            return Ok(());
-        }
         let Some(session_id) = layout.drawer.active_shell() else {
             return Ok(());
         };
@@ -469,9 +453,6 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
-        if self.presentation.is_remote() {
-            return Ok(());
-        }
         if self.secondary_state(cx).secondary
             && self
                 .app_store
@@ -603,9 +584,6 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.presentation.is_remote() {
-            return;
-        }
         if !active {
             return;
         }
@@ -649,14 +627,6 @@ impl MissionWorkspace {
         if self.rename_modal.is_some() || self.stop_all_confirm || self.restart_confirm.is_some() {
             return;
         }
-        if self.presentation.is_remote() {
-            if let MissionTab::Session(id) = &self.active_tab {
-                self.defer_remote_terminal_focus(id.clone(), false, window, cx);
-            } else {
-                self.root_focus.focus(window, cx);
-            }
-            return;
-        }
         let MissionTab::Session(session_id) = &self.active_tab else {
             window.focus(&self.root_focus, cx);
             return;
@@ -676,10 +646,6 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut App,
     ) {
-        if self.presentation.is_remote() {
-            self.defer_remote_terminal_focus(session_id.to_owned(), true, window, cx);
-            return;
-        }
         if self.mission_terminal_interactive(session_id, cx) {
             if let Some(chat) = self.attached.get(session_id) {
                 chat.terminal_focus.focus(window, cx);
@@ -687,45 +653,5 @@ impl MissionWorkspace {
             }
         }
         self.drawer_focus.focus(window, cx);
-    }
-    fn defer_remote_terminal_focus(
-        &self,
-        id: String,
-        drawer: bool,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let Some(shell) = self.shell.upgrade() else {
-            return;
-        };
-        let target = self.client.target.clone();
-        let generation = self.generation;
-        window.defer(cx, move |window, cx| {
-            shell.update(cx, |shell, cx| {
-                let current = shell
-                    .remote_client
-                    .mission_workspace()
-                    .is_some_and(|workspace| {
-                        if shell.remote_client.client(cx).target != target {
-                            return false;
-                        }
-                        let workspace = workspace.read(cx);
-                        workspace.active
-                            && workspace.generation == generation
-                            && workspace.rename_modal.is_none()
-                            && !workspace.stop_all_confirm
-                            && workspace.restart_confirm.is_none()
-                            && if drawer {
-                                workspace.layout.drawer.open()
-                                    && workspace.layout.drawer.active_shell() == Some(&id)
-                            } else {
-                                workspace.active_tab == MissionTab::Session(id.clone())
-                            }
-                    });
-                if current {
-                    shell.remote_client.focus_remote_terminal(&id, window, cx);
-                }
-            })
-        });
     }
 }

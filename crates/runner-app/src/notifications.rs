@@ -328,8 +328,8 @@ fn visible(cx: &mut App) -> Visible {
         };
         if let Ok(Some(visible)) = window.update(cx, |root, window, cx| {
             window.is_window_active().then(|| Visible {
-                app_active: root.remote_client.is_local(),
-                chats: if root.remote_client.is_local() && root.route == AppRoute::Chat {
+                app_active: true,
+                chats: if root.route == AppRoute::Chat {
                     root.tabs
                         .active()
                         .map(|tab| tab.session_ids())
@@ -338,7 +338,7 @@ fn visible(cx: &mut App) -> Visible {
                     Vec::new()
                 },
                 mission: match &root.route {
-                    AppRoute::Mission(id) if root.remote_client.is_local() => root
+                    AppRoute::Mission(id) => root
                         .mission_workspace
                         .read(cx)
                         .notification_tab(id)
@@ -364,7 +364,6 @@ struct NotificationController {
     pending_questions: BTreeMap<String, Event>,
     permission: Permission,
     _subscription: Subscription,
-    _pairing_subscription: Subscription,
     _listener: Task<()>,
     _events: Task<()>,
 }
@@ -372,51 +371,7 @@ struct NotificationController {
 struct GlobalNotifications(Entity<NotificationController>);
 impl Global for GlobalNotifications {}
 
-fn pairing_content(pairing: &crate::app_store::RemotePairing) -> SystemNotification {
-    SystemNotification {
-        tag: format!("remote-paired:{}", pairing.fingerprint).into(),
-        title: crate::i18n::tf("remote.paired_title", &[("name", pairing.name.clone())]).into(),
-        body: crate::i18n::tf("remote.paired_body", &[("name", pairing.name.clone())]).into(),
-        actions: Vec::new(),
-    }
-}
-
 impl NotificationController {
-    fn paired(&mut self, pairing: &crate::app_store::RemotePairing, cx: &mut Context<Self>) {
-        let notification = pairing_content(pairing);
-        #[cfg(target_os = "linux")]
-        let system_notification = true;
-        #[cfg(not(target_os = "linux"))]
-        let system_notification = self.permission == Permission::Allowed;
-        if system_notification {
-            cx.show_system_notification(notification);
-        }
-        // Linux cannot report delivery permission, so keep the pairing visible in-app too.
-        if !system_notification || cfg!(target_os = "linux") {
-            let window = cx
-                .active_window()
-                .and_then(|window| window.downcast::<NativeRoot>())
-                .or_else(|| {
-                    cx.windows()
-                        .into_iter()
-                        .find_map(|window| window.downcast::<NativeRoot>())
-                });
-            if let Some(window) = window {
-                let _ = window.update(cx, |root, _, cx| {
-                    root.show_toast(
-                        crate::i18n::messagef(
-                            "remote.paired_body",
-                            &[("name", pairing.name.clone())],
-                        ),
-                        crate::toast::ToastTone::Success,
-                        cx,
-                    );
-                    root.toasts.remote_pairing();
-                });
-            }
-        }
-    }
-
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let store = self.store.read(cx);
         let revisions = store.revisions;
@@ -683,10 +638,6 @@ pub(crate) fn install(cx: &mut App) {
             pending_questions: BTreeMap::new(),
             permission: Permission::Unknown,
             _subscription: cx.observe(&store, |this, _, cx| this.refresh(cx)),
-            _pairing_subscription: cx.subscribe(
-                &store,
-                |this, _, pairing: &crate::app_store::RemotePairing, cx| this.paired(pairing, cx),
-            ),
             _listener: listener,
             _events: event_task,
             store,
@@ -768,31 +719,6 @@ pub(crate) fn dismiss_all(cx: &mut App) {
 }
 
 pub(crate) fn open(tag: &str, cx: &mut App) {
-    if tag.starts_with("remote-paired:") {
-        if !cx
-            .windows()
-            .iter()
-            .any(|window| window.downcast::<NativeRoot>().is_some())
-        {
-            crate::handle_reopen(cx);
-        }
-        let window = cx
-            .active_window()
-            .and_then(|window| window.downcast::<NativeRoot>())
-            .or_else(|| {
-                cx.windows()
-                    .into_iter()
-                    .find_map(|window| window.downcast::<NativeRoot>())
-            });
-        if let Some(window) = window {
-            let _ = window.update(cx, |root, window, cx| {
-                window.activate_window();
-                root.enter_settings_route(Some("remote"), window, cx);
-            });
-        }
-        cx.activate(true);
-        return;
-    }
     let target = cx
         .try_global::<GlobalNotifications>()
         .and_then(|global| global.0.read(cx).posted.get(tag))
@@ -831,22 +757,19 @@ pub(crate) fn open(tag: &str, cx: &mut App) {
             .iter()
             .copied()
             .filter(|window| {
-                window.read(cx).is_ok_and(|root| {
-                    root.remote_client.is_local()
-                        && match target {
-                            Target::Chat(id) => {
-                                root.route == AppRoute::Chat
-                                    && root
-                                        .tabs
-                                        .active()
-                                        .is_some_and(|tab| tab.session_ids().contains(id))
-                            }
-                            Target::Slot { mission, .. }
-                            | Target::Question { mission }
-                            | Target::MissionIdle { mission } => {
-                                root.route == AppRoute::Mission(mission.clone())
-                            }
-                        }
+                window.read(cx).is_ok_and(|root| match target {
+                    Target::Chat(id) => {
+                        root.route == AppRoute::Chat
+                            && root
+                                .tabs
+                                .active()
+                                .is_some_and(|tab| tab.session_ids().contains(id))
+                    }
+                    Target::Slot { mission, .. }
+                    | Target::Question { mission }
+                    | Target::MissionIdle { mission } => {
+                        root.route == AppRoute::Mission(mission.clone())
+                    }
                 })
             })
             .max_by_key(|window| {
@@ -891,12 +814,6 @@ pub(crate) fn open(tag: &str, cx: &mut App) {
     if let Some(window) = window {
         let _ = window.update(cx, |root, window, cx| {
             window.activate_window();
-            if target.is_some() && root.remote_client.is_active() {
-                root.remote_client.remember_remote_selection(cx);
-                root.remote_client.disconnect();
-                root.remote_client.ui.picker_open = false;
-                cx.notify();
-            }
             match target {
                 Some(Target::Chat(id)) => {
                     if !root.open_chat_session(&id, window, cx) {

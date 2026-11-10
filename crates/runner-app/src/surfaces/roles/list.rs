@@ -29,15 +29,6 @@ use crate::*;
 
 impl NativeRoot {
     pub(crate) fn open_roles(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() {
-            self.open_remote_library(
-                crate::surfaces::remote_client::RemoteItem::Roles,
-                window,
-                cx,
-            );
-            return;
-        }
-
         if self.route != AppRoute::Roles {
             self.role_surfaces.list.reset();
             self.role_surfaces
@@ -57,10 +48,6 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.remote_client.is_active() {
-            return;
-        }
-
         self.role_surfaces.prompt_expanded = false;
         self.enter_entity_route(AppRoute::RoleDetail(handle.clone()), window, cx);
         self.load_role_detail(handle, cx);
@@ -78,17 +65,6 @@ impl NativeRoot {
         self.set_route(route, cx);
         window.focus(&self.root_focus, cx);
         cx.notify();
-    }
-
-    pub(crate) fn set_role_query(&mut self, query: String, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() {
-            let list = &mut self.role_page_surfaces_mut().list;
-            let update = list.set_query(query);
-            list.apply_debounced_query(update.generation);
-            self.load_role_page(cx);
-            return;
-        }
-        self.set_local_role_query(query, cx);
     }
 
     pub(super) fn set_local_role_query(&mut self, query: String, cx: &mut Context<Self>) {
@@ -114,25 +90,12 @@ impl NativeRoot {
     }
 
     pub(crate) fn set_role_page(&mut self, page: usize, cx: &mut Context<Self>) {
-        if self.role_page_surfaces_mut().list.set_page(page) {
-            self.role_page_surfaces()
+        if self.role_surfaces.list.set_page(page) {
+            self.role_surfaces
                 .scroll
                 .set_offset(gpui::point(px(0.), px(0.)));
             self.load_role_page(cx);
         }
-    }
-
-    pub(crate) fn set_role_page_size(&mut self, size: usize, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() {
-            if self.role_page_surfaces_mut().list.set_page_size(size) {
-                self.role_page_surfaces()
-                    .scroll
-                    .set_offset(gpui::point(px(0.), px(0.)));
-                self.load_role_page(cx);
-            }
-            return;
-        }
-        self.set_local_role_page_size(size, cx);
     }
 
     pub(super) fn set_local_role_page_size(&mut self, size: usize, cx: &mut Context<Self>) {
@@ -163,21 +126,7 @@ impl NativeRoot {
         }
     }
 
-    pub(super) fn role_page_surfaces(&self) -> &RoleSurfaces {
-        self.remote_client
-            .role_surfaces()
-            .unwrap_or(&self.role_surfaces)
-    }
-    pub(super) fn role_page_surfaces_mut(&mut self) -> &mut RoleSurfaces {
-        self.remote_client
-            .role_surfaces_mut()
-            .unwrap_or(&mut self.role_surfaces)
-    }
     pub(crate) fn load_role_page(&mut self, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() {
-            self.remote_client.load_role_page(cx);
-            return;
-        }
         self.load_local_role_page(cx);
     }
 
@@ -201,7 +150,7 @@ impl NativeRoot {
                         if this.role_surfaces.list.apply_success(
                             request_id,
                             runner_core::protocol::ListPage {
-                                items: page.items.into_iter().map(RoleListRow::Local).collect(),
+                                items: page.items,
                                 total_count: page.total_count,
                                 filtered_count: page.filtered_count,
                             },
@@ -322,17 +271,9 @@ impl NativeRoot {
         let empty_create_root = root.clone();
         let clear_root = root.clone();
         let page_root = root.clone();
-        let query = self.role_page_surfaces().list.query.clone();
-        let clear_client = self.front_page_client(cx);
-        let page_client = clear_client.clone();
-        let epoch = self.remote_client.ui.epoch;
-        let remote = self.remote_client.is_active();
-        let columns = if remote {
-            super::logic::role_table_columns_with_activity(self.role_table_width(window, cx), false)
-        } else {
-            role_table_columns(self.role_table_width(window, cx))
-        };
-        let items = self.role_page_surfaces().list.items.clone();
+        let query = self.role_surfaces.list.query.clone();
+        let columns = role_table_columns(self.role_table_width(window, cx));
+        let items = self.role_surfaces.list.items.clone();
         let last = items.len().saturating_sub(1);
         let now = chrono::Local::now();
         let rows = items
@@ -363,13 +304,7 @@ impl NativeRoot {
                     .size(ButtonSize::Sm)
                     .on_press(move |_, cx| {
                         clear_root.update(cx, |this, cx| {
-                            if !this
-                                .remote_client
-                                .library_view_current(&clear_client, epoch, cx)
-                            {
-                                return;
-                            }
-                            this.role_page_surfaces()
+                            this.role_surfaces
                                 .search
                                 .update(cx, |search, search_cx| search.set_value("", search_cx));
                         });
@@ -382,68 +317,50 @@ impl NativeRoot {
                 .size(rems(22. / 16.))
                 .text_color(theme::accent()),
             crate::i18n::text("ui.no_roles_yet"),
-            crate::i18n::text(if remote {
-                "client.roles_read_only"
-            } else {
-                "ui.a_role_is_a_reusable_cli_agent_claude_code_codex_a_custom_shell_that_crews_pull_in_add_one"
-            }),
-            div().when(!remote, |entry| {
-                entry
-                    .when(cfg!(test), |entry| {
-                        entry.debug_selector(|| "EMPTY_NEW_ROLE".into())
-                    })
-                    .child(
-                        Button::new(
-                            "empty-new-role",
-                            crate::i18n::text("ui.new_role_inline_action"),
-                        )
-                        .variant(ButtonVariant::Primary)
-                        .on_press(move |window, cx| {
-                            empty_create_root
-                                .update(cx, |this, cx| this.open_create_role(window, cx));
-                        }),
+            crate::i18n::text(
+                "ui.a_role_is_a_reusable_cli_agent_claude_code_codex_a_custom_shell_that_crews_pull_in_add_one",
+            ),
+            div()
+                .when(cfg!(test), |entry| {
+                    entry.debug_selector(|| "EMPTY_NEW_ROLE".into())
+                })
+                .child(
+                    Button::new(
+                        "empty-new-role",
+                        crate::i18n::text("ui.new_role_inline_action"),
                     )
-            }),
+                    .variant(ButtonVariant::Primary)
+                    .on_press(move |window, cx| {
+                        empty_create_root
+                            .update(cx, |this, cx| this.open_create_role(window, cx));
+                    }),
+                ),
         );
         PaginatedListPage::new(
             crate::i18n::text("ui.roles"),
-            div().child(crate::i18n::text(if remote {
-                "client.roles_read_only"
-            } else {
-                "ui.the_setups_your_chats_and_crews_run_on_a_runtime_a_model_an_effort_and_a_brief"
-            })),
+            div().child(crate::i18n::text(
+                "ui.the_setups_your_chats_and_crews_run_on_a_runtime_a_model_an_effort_and_a_brief",
+            )),
             div()
-                .when(remote, |entry| {
-                    entry.child(self.remote_client.render_library_refresh(cx))
+                .when(cfg!(test), |entry| {
+                    entry.debug_selector(|| "NEW_ROLE".into())
                 })
-                .when(!remote, |entry| {
-                    entry
-                        .when(cfg!(test), |entry| {
-                            entry.debug_selector(|| "NEW_ROLE".into())
-                        })
-                        .child(
-                            Button::new("new-role", crate::i18n::text("ui.new_role_inline_action"))
-                                .variant(ButtonVariant::Primary)
-                                .on_press(move |window, cx| {
-                                    create_root
-                                        .update(cx, |this, cx| this.open_create_role(window, cx));
-                                }),
-                        )
-                }),
+                .child(
+                    Button::new("new-role", crate::i18n::text("ui.new_role_inline_action"))
+                        .variant(ButtonVariant::Primary)
+                        .on_press(move |window, cx| {
+                            create_root.update(cx, |this, cx| this.open_create_role(window, cx));
+                        }),
+                ),
             crate::i18n::text("noun.roles"),
             empty_state,
-            self.role_page_surfaces().search.clone(),
+            self.role_surfaces.search.clone(),
             no_matches,
-            self.role_page_surfaces().list.page,
-            self.role_page_surfaces().list.page_count(),
+            self.role_surfaces.list.page,
+            self.role_surfaces.list.page_count(),
             Rc::new(move |page, _, cx| {
                 page_root.update(cx, |this, cx| {
-                    if this
-                        .remote_client
-                        .library_view_current(&page_client, epoch, cx)
-                    {
-                        this.set_role_page(page, cx);
-                    }
+                    this.set_role_page(page, cx);
                 });
             }),
             div()
@@ -455,23 +372,23 @@ impl NativeRoot {
                 .flex_col()
                 .flex_none()
                 .children(rows),
-            self.role_page_surfaces().scroll.clone(),
-            self.role_page_surfaces().scrollbar.clone(),
+            self.role_surfaces.scroll.clone(),
+            self.role_surfaces.scrollbar.clone(),
         )
         .header(role_table_header(&columns))
         .page_size(
-            self.role_page_surfaces().page_size.clone(),
+            self.role_surfaces.page_size.clone(),
             self.role_table_width(window, cx) < 480.,
         )
         .counts(
-            self.role_page_surfaces().list.filtered_count,
-            self.role_page_surfaces().list.total_count,
-            self.role_page_surfaces().list.searching(),
+            self.role_surfaces.list.filtered_count,
+            self.role_surfaces.list.total_count,
+            self.role_surfaces.list.searching(),
         )
         .load_state(
-            self.role_page_surfaces().list.loading || self.app_store.read(cx).daemon_disconnected,
-            self.role_page_surfaces().list.loaded,
-            self.role_page_surfaces()
+            self.role_surfaces.list.loading || self.app_store.read(cx).daemon_disconnected,
+            self.role_surfaces.list.loaded,
+            self.role_surfaces
                 .list
                 .error
                 .clone()
@@ -498,48 +415,29 @@ impl NativeRoot {
     fn set_role_row_hovered(&mut self, id: &str, hovered: bool, cx: &mut Context<Self>) {
         let next = if hovered {
             Some(id.to_owned())
-        } else if self.role_page_surfaces().hovered_row.as_deref() == Some(id) {
+        } else if self.role_surfaces.hovered_row.as_deref() == Some(id) {
             None
         } else {
             return;
         };
-        if self.role_page_surfaces().hovered_row != next {
-            self.role_page_surfaces_mut().hovered_row = next;
+        if self.role_surfaces.hovered_row != next {
+            self.role_surfaces.hovered_row = next;
             cx.notify();
         }
     }
 
     fn start_list_role_chat(
         &mut self,
-        row: RoleListRow,
+        row: RoleWithActivity,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match row {
-            RoleListRow::Local(item) if self.remote_client.is_local() => {
-                self.start_role_chat(item.role, window, cx)
-            }
-            RoleListRow::Remote {
-                role,
-                target,
-                epoch,
-                ..
-            } if self.front_page_client(cx).target == target
-                && self.remote_client.ui.epoch == epoch
-                && matches!(
-                    self.remote_client.active_item(),
-                    Some(crate::surfaces::remote_client::RemoteItem::Roles)
-                ) =>
-            {
-                self.open_remote_role_chat(role.id, window, cx);
-            }
-            _ => {}
-        }
+        self.start_role_chat(row.role, window, cx);
     }
 
     fn render_role_row(
         &self,
-        item: RoleListRow,
+        item: RoleWithActivity,
         columns: &[RoleColumn],
         divider: bool,
         now: &chrono::DateTime<chrono::Local>,
@@ -552,25 +450,17 @@ impl NativeRoot {
         let chat_root = root.clone();
         let chat_key_root = root.clone();
         let menu_root = root;
-        let role = item.display();
-        let local = item.local().is_some();
-        let id = role.id.to_owned();
+        let id = item.role.id.clone();
         let hover_id = id.clone();
-        let hover_client = self.front_page_client(cx);
         let row_selector = id.clone();
         let chat_selector = id.clone();
-        let handle = role.handle.to_owned();
+        let handle = item.role.handle.clone();
         let open_handle = handle.clone();
-        let menu_item = item.local().cloned();
+        let menu_item = Some(item.clone());
         let chat_role = item.clone();
         let chat_key_role = item.clone();
-        let pending = self.role_page_surfaces().chat_pending.as_deref() == Some(id.as_str());
-        let can_start = local
-            || self
-                .front_page_client(cx)
-                .supports(&["catalog", "startChat"]);
-        let chat_button =
-            pending || self.role_page_surfaces().hovered_row.as_deref() == Some(id.as_str());
+        let pending = self.role_surfaces.chat_pending.as_deref() == Some(id.as_str());
+        let chat_button = pending || self.role_surfaces.hovered_row.as_deref() == Some(id.as_str());
         let chat = div()
             .id(SharedString::from(format!("role-chat-{id}")))
             .when(cfg!(test), |chat| {
@@ -657,32 +547,25 @@ impl NativeRoot {
             .when(divider, |row| {
                 row.border_b_1().border_color(theme::border())
             })
-            .when(local, |row| row.cursor_pointer())
-            .tab_stop(local)
+            .cursor_pointer()
             .hover(|row| row.bg(theme::panel()))
             .focus_visible(|row| row.bg(theme::panel()))
             .on_hover(move |hovered, _, cx| {
                 hover_root.update(cx, |this, cx| {
-                    if this.front_page_client(cx).target == hover_client.target
-                        && (!hover_client.is_remote() || hover_client.valid())
-                    {
-                        this.set_role_row_hovered(&hover_id, *hovered, cx);
-                    }
+                    this.set_role_row_hovered(&hover_id, *hovered, cx);
                 });
             })
-            .when(local, |row| {
-                row.on_click(move |_, window, cx| {
-                    open_root.update(cx, |this, cx| {
-                        this.open_role_detail(open_handle.clone(), window, cx)
-                    });
-                })
-                .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        cx.stop_propagation();
-                        let handle = handle.clone();
-                        key_root.update(cx, |this, cx| this.open_role_detail(handle, window, cx));
-                    }
-                })
+            .on_click(move |_, window, cx| {
+                open_root.update(cx, |this, cx| {
+                    this.open_role_detail(open_handle.clone(), window, cx)
+                });
+            })
+            .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    cx.stop_propagation();
+                    let handle = handle.clone();
+                    key_root.update(cx, |this, cx| this.open_role_detail(handle, window, cx));
+                }
             })
             .child(
                 div()
@@ -692,7 +575,7 @@ impl NativeRoot {
                     .items_center()
                     .gap(rems(10. / 16.))
                     .pr_3()
-                    .child(RoleAvatar::new(role.handle.to_owned(), 26.))
+                    .child(RoleAvatar::new(item.role.handle.clone(), 26.))
                     .child(
                         div()
                             .min_w(px(0.))
@@ -704,7 +587,7 @@ impl NativeRoot {
                                     .text_size(theme::text_body())
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(theme::text())
-                                    .child(role.display_name.to_owned()),
+                                    .child(item.role.display_name.clone()),
                             )
                             .child(
                                 div()
@@ -712,7 +595,7 @@ impl NativeRoot {
                                     .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(theme::text_meta())
                                     .text_color(theme::faint())
-                                    .child(format!("@{}", role.handle)),
+                                    .child(format!("@{}", item.role.handle)),
                             ),
                     ),
             )
@@ -732,7 +615,7 @@ impl NativeRoot {
                     .items_center()
                     .justify_end()
                     .gap_1()
-                    .when(can_start, |actions| actions.child(chat))
+                    .child(chat)
                     .children(menu_item.map(|menu_item| {
                         IconButton::new(
                             SharedString::from(format!("role-actions-{id}")),
@@ -745,9 +628,7 @@ impl NativeRoot {
                             let position = window.mouse_position();
                             let item = menu_item.clone();
                             menu_root.update(cx, |this, cx| {
-                                if this.remote_client.is_local() {
-                                    this.open_role_menu(item, position, window, cx);
-                                }
+                                this.open_role_menu(item, position, window, cx);
                             });
                         })
                     })),
@@ -788,10 +669,10 @@ fn role_table_header(columns: &[RoleColumn]) -> AnyElement {
 
 fn role_table_cell(
     column: RoleColumn,
-    item: &RoleListRow,
+    item: &RoleWithActivity,
     now: &chrono::DateTime<chrono::Local>,
 ) -> AnyElement {
-    let role = item.display();
+    let role = &item.role;
     let cell = div()
         .w(rems(column.width() / 16.))
         .flex_none()
@@ -814,13 +695,13 @@ fn role_table_cell(
     };
     match column {
         RoleColumn::Runtime => {
-            let icon = ChatIcon::for_runtime(role.runtime);
+            let icon = ChatIcon::for_runtime(&role.runtime);
             cell.flex()
                 .items_center()
                 .gap(rems(6. / 16.))
                 .child(icon.render(rems(12. / 16.), icon.color(theme::muted(), true), true))
                 .child(text(
-                    runtime_display_name(role.runtime),
+                    runtime_display_name(&role.runtime),
                     false,
                     theme::text(),
                 ))
@@ -828,9 +709,9 @@ fn role_table_cell(
         }
         RoleColumn::Model | RoleColumn::Effort => {
             let (label, unset) = if column == RoleColumn::Model {
-                role_setting_label(role.model)
+                role_setting_label(role.model.as_deref())
             } else {
-                super::logic::role_effort_label(role.effort)
+                super::logic::role_effort_label(role.effort.as_deref())
             };
             cell.child(text(
                 label,
@@ -840,10 +721,7 @@ fn role_table_cell(
             .into_any_element()
         }
         RoleColumn::Crews => {
-            let crews = match item {
-                RoleListRow::Local(item) => item.activity.crew_count,
-                RoleListRow::Remote { crew_count, .. } => *crew_count as i64,
-            };
+            let crews = item.activity.crew_count;
             cell.child(text(
                 crews_label(crews),
                 false,
@@ -856,7 +734,7 @@ fn role_table_cell(
             .into_any_element()
         }
         RoleColumn::LastActive => {
-            let (label, live) = last_active_label(&item.local().unwrap().activity, now);
+            let (label, live) = last_active_label(&item.activity, now);
             cell.flex()
                 .items_center()
                 .gap(rems(6. / 16.))
@@ -878,51 +756,5 @@ fn role_table_cell(
                 ))
                 .into_any_element()
         }
-    }
-}
-
-impl RoleSurfaces {
-    pub(crate) fn load_remote_page(
-        &mut self,
-        catalog: &runner_core::companion::Catalog,
-        target: &crate::surfaces::front_page::FrontPageTarget,
-        window_epoch: u64,
-    ) -> bool {
-        let list = &mut self.list;
-        let request = list.begin_load();
-        let query = request.query.trim().to_lowercase();
-        let rows = catalog
-            .roles
-            .iter()
-            .filter(|role| {
-                query.is_empty()
-                    || role.name.to_lowercase().contains(&query)
-                    || role.handle.to_lowercase().contains(&query)
-            })
-            .map(|role| RoleListRow::Remote {
-                role: role.clone(),
-                crew_count: catalog
-                    .crews
-                    .iter()
-                    .filter(|crew| crew.slots.iter().any(|slot| slot.role == role.id))
-                    .count(),
-                target: target.clone(),
-                epoch: window_epoch,
-            })
-            .collect::<Vec<_>>();
-        let filtered_count = rows.len() as i64;
-        let items = rows
-            .into_iter()
-            .skip((request.page - 1) * request.page_size)
-            .take(request.page_size)
-            .collect();
-        list.apply_success(
-            request.request_id,
-            runner_core::protocol::ListPage {
-                items,
-                total_count: catalog.roles.len() as i64,
-                filtered_count,
-            },
-        )
     }
 }

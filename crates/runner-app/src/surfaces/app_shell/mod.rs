@@ -118,11 +118,7 @@ impl NativeRoot {
             self.show_toast(error, ToastTone::Error, cx);
         }
 
-        let workspace = if self.remote_client.is_active() {
-            self.render_remote_workspace(window, cx)
-        } else {
-            self.render_entity_surface(window, cx)
-        };
+        let workspace = self.render_entity_surface(window, cx);
         let (sidebar, sidebar_divider) = self.render_app_sidebar(window, cx);
         let sidebar_resize =
             sidebar_divider.map(|divider| self.render_sidebar_resize_handle(divider, cx));
@@ -131,38 +127,24 @@ impl NativeRoot {
             .start_chat_modal
             .is_some()
             .then(|| self.render_start_chat_modal(window, cx));
-        let chat_rename_modal = (self.remote_client.is_active() || self.route == AppRoute::Chat)
+        let chat_rename_modal = (self.route == AppRoute::Chat)
             .then_some(self.chat_rename_modal.as_ref())
             .flatten()
             .map(|_| self.render_chat_rename_modal(cx));
-        let terminal_close_confirm = (self.remote_client.is_active()
-            || matches!(self.route, AppRoute::Chat | AppRoute::Mission(_)))
-        .then_some(self.terminal_close_confirm.as_ref())
-        .flatten()
-        .map(|_| self.render_terminal_close_confirm(cx));
-        let fork_confirm = (self.remote_client.is_active() || self.route == AppRoute::Chat)
+        let terminal_close_confirm = matches!(self.route, AppRoute::Chat | AppRoute::Mission(_))
+            .then_some(self.terminal_close_confirm.as_ref())
+            .flatten()
+            .map(|_| self.render_terminal_close_confirm(cx));
+        let fork_confirm = (self.route == AppRoute::Chat)
             .then_some(self.fork_confirm.as_ref())
             .flatten()
             .map(|_| self.render_fork_confirm(cx));
-        let sidebar_overlays = if self.route != AppRoute::Settings || self.remote_client.is_active()
-        {
+        let sidebar_overlays = if self.route != AppRoute::Settings {
             self.render_sidebar_overlays(cx)
         } else {
             Vec::new()
         };
-        let entity_overlays = if let Some(workspace) = self.remote_client.mission_workspace() {
-            let fallback = (!self.create_modal_open()
-                && self.chat_rename_modal.is_none()
-                && self.fork_confirm.is_none()
-                && self.terminal_close_confirm.is_none()
-                && self.remote_client.ui.pair.is_none()
-                && !self.remote_client.ui.picker_open)
-                .then(|| self.root_focus.clone());
-            workspace.update(cx, |workspace, cx| {
-                workspace.restore_remote_dialog_focus(fallback.as_ref(), window, cx);
-                workspace.render_mission_overlays(cx)
-            })
-        } else if self.route != AppRoute::Settings {
+        let entity_overlays = if self.route != AppRoute::Settings {
             self.render_entity_overlays(window, cx)
         } else {
             Vec::new()
@@ -212,31 +194,15 @@ impl NativeRoot {
             .children(fork_confirm)
             .children(sidebar_overlays)
             .children(entity_overlays);
-        let settings = (self.remote_client.is_local() && self.route == AppRoute::Settings)
-            .then(|| self.render_settings_takeover(window, cx));
+        let settings =
+            (self.route == AppRoute::Settings).then(|| self.render_settings_takeover(window, cx));
         let settings_confirm = self
-            .remote_client
-            .is_local()
-            .then(|| self.settings_confirm_overlay(cx))
-            .flatten()
+            .settings_confirm_overlay(cx)
             .map(|overlay| deferred(overlay).with_priority(100));
-        let computer_pair = self
-            .remote_client
-            .render_computer_pair(cx)
-            .map(|dialog| deferred(dialog).with_priority(110));
-        let computer_picker = self
-            .remote_client
-            .render_computer_picker(window, cx)
-            .map(|picker| deferred(picker).with_priority(80));
         let command_palette = Some(deferred(self.command_palette.clone()).with_priority(50));
-        let toast_priority = if self.route == AppRoute::Settings && self.remote_pin_dialog_open() {
-            101
-        } else {
-            3
-        };
         let toast = self
             .render_toast(cx)
-            .map(|toast| deferred(toast).with_priority(toast_priority));
+            .map(|toast| deferred(toast).with_priority(3));
         let modifier_sidebar = self.front_page_sidebar();
         let key_sidebar = self.front_page_sidebar();
         let usage_root = cx.entity();
@@ -250,18 +216,13 @@ impl NativeRoot {
             .font(crate::app_settings::app_font())
             .bg(theme::chrome())
             .text_color(theme::text())
-            .children(
-                (self.remote_client.is_active() || self.route != AppRoute::Settings)
-                    .then_some(chrome),
-            )
+            .children((self.route != AppRoute::Settings).then_some(chrome))
             .children(settings)
             .children(self.render_window_top_margin_drag_area(cx))
             .children(self.render_window_navigation(window, cx))
             .children(modal)
             .children(settings_confirm)
             .children(command_palette)
-            .children(computer_picker)
-            .children(computer_pair)
             .children(toast)
             .children(
                 self.quit_dialog
@@ -311,10 +272,6 @@ impl NativeRoot {
                         this.sidebar_resizing = true;
                         cx.notify();
                     }
-                    if this.remote_client.is_active() {
-                        this.remote_client.set_sidebar_width(width, cx);
-                        return;
-                    }
                     this.update_app_settings(cx, false, |settings| {
                         if settings.sidebar_width == width {
                             return false;
@@ -326,9 +283,7 @@ impl NativeRoot {
             ))
             .on_drop(cx.listener(|this, _: &SidebarResizeDrag, _, cx| {
                 this.finish_sidebar_resize(cx);
-                if this.remote_client.is_local() {
-                    this.save_settings(cx);
-                }
+                this.save_settings(cx);
             }))
             .on_mouse_up(
                 MouseButton::Left,
@@ -1481,45 +1436,6 @@ mod tests {
                     root.render_sidebar_brand(self.available.then(|| "0.99.0".into()), cx)
                 }))
         }
-    }
-
-    #[test]
-    fn remote_sidebar_hides_an_available_local_update() {
-        use crate::surfaces::remote_client::tests::{choose_host, enable_front_page, fixture};
-        use gpui::{TestAppContext, VisualTestContext};
-        let _theme = crate::theme_snapshot::ThemeGuard::new();
-        let temp = tempfile::tempdir().unwrap();
-        let mut cx = TestAppContext::single();
-        let (store, fake, _) = fixture(&mut cx, temp.path());
-        enable_front_page(&fake);
-        let host = cx.add_window(|window, cx| SidebarHeaderProbe {
-            root: cx.new(|cx| {
-                NativeRoot::new(
-                    "remote-update".into(),
-                    temp.path().join("logs"),
-                    None,
-                    None,
-                    store.clone(),
-                    window,
-                    cx,
-                )
-            }),
-            width: app_settings::SIDEBAR_DEFAULT,
-            zoom: 1.,
-            available: true,
-        });
-        let mut visual = VisualTestContext::from_window(host.into(), &cx);
-        visual.run_until_parked();
-        assert!(visual.debug_bounds("SIDEBAR_UPDATE").is_some());
-        host.update(&mut visual, |probe, window, cx| {
-            probe
-                .root
-                .update(cx, |root, cx| choose_host(root, window, cx));
-        })
-        .unwrap();
-        visual.run_until_parked();
-        assert!(visual.debug_bounds("SIDEBAR_UPDATE").is_none());
-        assert!(visual.debug_bounds("SIDEBAR_BRAND_MARK").is_some());
     }
 
     #[test]

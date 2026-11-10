@@ -19,9 +19,6 @@ impl MissionWorkspace {
         session: &crate::surfaces::front_page::model::MissionMemberDisplay,
         cx: &App,
     ) -> String {
-        if let Some(title) = self.presentation.remote_title_tooltip(session) {
-            return title;
-        }
         let title = self
             .attached
             .get(&session.session.id)
@@ -241,17 +238,6 @@ impl MissionWorkspace {
         let pill_root = root.clone();
         let feed_up_root = root.clone();
         let feed_out_root = root.clone();
-        let remote_feed = self.presentation.feed();
-        let feed_state = remote_feed.as_ref().map(|feed| {
-            let feed = feed.read(cx);
-            (
-                feed.loading,
-                feed.older_loading,
-                feed.before.is_some(),
-                feed.can_load_older(),
-                feed.error.clone(),
-            )
-        });
         let pane = div()
             .relative()
             .min_h(px(0.))
@@ -259,25 +245,6 @@ impl MissionWorkspace {
             .flex()
             .flex_col()
             .bg(theme::bg())
-            .children(feed_state.map(|(loading, older_loading, older, can_load_older, error)| {
-                let feed = remote_feed.unwrap().downgrade();
-                let retry = feed.clone();
-                let failed = error.is_some();
-                div()
-                    .flex_none().px_4().py_1().flex().items_center().gap_2()
-                    .children(error.map(|error| div().text_color(theme::danger()).text_size(theme::text_meta()).child(error)))
-                    .children((loading || older_loading).then(|| crate::i18n::text("ui.loading")))
-                    .children((older && !loading).then(|| {
-                        Button::new("remote-feed-older", crate::i18n::text("mission.load_older"))
-                            .variant(ButtonVariant::Ghost).disabled(!can_load_older)
-                            .on_press(move |_, cx| { let _ = feed.update(cx, |feed, cx| feed.older(cx)); })
-                    }))
-                    .children(failed.then(|| {
-                        Button::new("remote-feed-refresh", crate::i18n::text("ui.retry"))
-                            .variant(ButtonVariant::Ghost).disabled(loading || older_loading)
-                            .on_press(move |_, cx| { let _ = retry.update(cx, |feed, cx| feed.retry(cx)); })
-                    }))
-            }))
             .child(
                 div()
                     .id("mission-feed-scroll")
@@ -587,26 +554,24 @@ impl MissionWorkspace {
                     .text_color(theme::muted())
                     .child(description),
             )
-            .when(!self.presentation.is_remote(), |panel| {
-                panel.child(
-                    Button::new("empty-mission-add-role", crate::i18n::text("ui.add_role"))
-                        .variant(ButtonVariant::Primary)
-                        .icon("plus.svg")
-                        .on_press(move |window, cx| {
-                            if let Some(mission) = mission.clone() {
-                                let _ = shell.update(cx, |this, cx| {
-                                    this.open_add_role_modal(
-                                        mission,
-                                        Vec::new(),
-                                        events.clone(),
-                                        window,
-                                        cx,
-                                    )
-                                });
-                            }
-                        }),
-                )
-            })
+            .child(
+                Button::new("empty-mission-add-role", crate::i18n::text("ui.add_role"))
+                    .variant(ButtonVariant::Primary)
+                    .icon("plus.svg")
+                    .on_press(move |window, cx| {
+                        if let Some(mission) = mission.clone() {
+                            let _ = shell.update(cx, |this, cx| {
+                                this.open_add_role_modal(
+                                    mission,
+                                    Vec::new(),
+                                    events.clone(),
+                                    window,
+                                    cx,
+                                )
+                            });
+                        }
+                    }),
+            )
             .into_any_element()
     }
 
@@ -752,7 +717,6 @@ impl MissionWorkspace {
     fn render_mission_feed_block(&self, block: FeedBlock, cx: &mut Context<Self>) -> AnyElement {
         let id = block.id().to_owned();
         match block {
-            FeedBlock::PendingAsk(question) => self.render_question(question, cx),
             FeedBlock::Divider(event) => div()
                 .id(SharedString::from(format!("mission-divider-{id}")))
                 .px_4()
@@ -1147,17 +1111,11 @@ impl MissionWorkspace {
             markdown_id,
             asker,
             prompt,
-            mut choices,
+            choices,
             chain,
             time,
         } = question;
-        if !self.remote_supports(&["answer"]) {
-            choices.clear();
-        }
-        let available = !self.presentation.is_remote()
-            || self
-                .remote_summary()
-                .is_some_and(|mission| mission.asks.iter().any(|ask| ask.question == question_id));
+        let available = self.askers_by_question.contains_key(&question_id);
         let resolved = self.resolved_asks.get(&question_id).cloned();
         let pending_choice = self.pending_ask_choices.get(&question_id).cloned();
         let submitting = self.submitting_asks.contains(&question_id) || !available;
@@ -1321,14 +1279,6 @@ impl MissionWorkspace {
         choice: String,
         cx: &mut Context<Self>,
     ) {
-        if !self.remote_supports(&["answer"])
-            || (self.client.is_remote()
-                && !self.remote_summary().is_some_and(|mission| {
-                    mission.asks.iter().any(|ask| ask.question == question_id)
-                }))
-        {
-            return;
-        }
         let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
@@ -1345,7 +1295,6 @@ impl MissionWorkspace {
         self.invalidate_feed_ask(&question_id);
         cx.notify();
         let core = self.client.clone();
-        let guard = core.clone();
         let generation = self.generation;
         let post_question = question_id.clone();
         let task = cx.background_spawn(async move {
@@ -1355,7 +1304,7 @@ impl MissionWorkspace {
         cx.spawn(async move |weak, cx| {
             let result = task.await;
             let _ = weak.update(cx, |this, cx| {
-                if !guard.valid() || (guard.is_remote() && this.generation != generation) {
+                if this.generation != generation {
                     return;
                 }
                 this.submitting_asks.remove(&question_id);
@@ -1368,24 +1317,5 @@ impl MissionWorkspace {
             });
         })
         .detach();
-    }
-}
-
-impl remote::MissionPresentation {
-    pub(super) fn remote_title_tooltip(
-        &self,
-        session: &crate::surfaces::front_page::model::MissionMemberDisplay,
-    ) -> Option<String> {
-        if self.is_remote() {
-            return Some(
-                session
-                    .live_title
-                    .as_ref()
-                    .filter(|title| !title.is_empty())
-                    .map(|title| format!("@{} · {title}", session.handle))
-                    .unwrap_or_else(|| format!("@{}", session.handle)),
-            );
-        }
-        None
     }
 }

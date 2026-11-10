@@ -152,15 +152,11 @@ impl Sidebar {
         cx: &App,
     ) -> Vec<ActiveSidebarRow> {
         let store = self.app_store.read(cx);
-        let mission_members = if self.front_page.is_remote() {
-            HashSet::new()
-        } else {
-            store
-                .missions
-                .iter()
-                .flat_map(|summary| summary.session_statuses.iter().map(|(id, _)| id.as_str()))
-                .collect::<HashSet<_>>()
-        };
+        let mission_members = store
+            .missions
+            .iter()
+            .flat_map(|summary| summary.session_statuses.iter().map(|(id, _)| id.as_str()))
+            .collect::<HashSet<_>>();
         let mut rows = Vec::new();
         for source in self.resolved_sidebar_rows_for_tabs(tabs, cx) {
             let (group, rollup, live) = match &source {
@@ -185,11 +181,7 @@ impl Sidebar {
                             let mut status = active_session_status(
                                 session,
                                 self.session_status(&session.session_id, cx).as_ref(),
-                                if self.front_page.is_remote() {
-                                    None
-                                } else {
-                                    store.session_activity.get(&session.session_id)
-                                },
+                                store.session_activity.get(&session.session_id),
                             );
                             if !terminals_only
                                 && is_shell(session)
@@ -426,20 +418,11 @@ impl Sidebar {
         let project = projects
             .iter()
             .find(|project| Some(&project.id) == project_id.as_ref());
-        let location = if self.front_page.is_remote() {
-            match (project, cwd) {
-                (Some(project), Some(cwd)) => format!("{} › {}", project.name, cwd),
-                (Some(project), None) => project.name.clone(),
-                (None, Some(cwd)) => cwd.to_owned(),
-                _ => String::new(),
-            }
-        } else {
-            active_location(
-                project.and_then(|p| p.local.as_ref()),
-                cwd,
-                store.home_dir.as_deref().and_then(|path| path.to_str()),
-            )
-        };
+        let location = active_location(
+            project.and_then(|p| p.local.as_ref()),
+            cwd,
+            store.home_dir.as_deref().and_then(|path| path.to_str()),
+        );
         let title = if renaming {
             div()
                 .debug_selector(|| format!("ACTIVE_RENAME {}", shortcut.node_id))
@@ -477,10 +460,10 @@ impl Sidebar {
                 }),
             )
         } else {
-            sidebar_row_trailing_slot().child(row.rollup.render_pane_with_elapsed(
-                SharedString::from(format!("active-status-{}", shortcut.node_id)),
-                !self.front_page.is_remote(),
-            ))
+            sidebar_row_trailing_slot().child(row.rollup.render_pane(SharedString::from(format!(
+                "active-status-{}",
+                shortcut.node_id
+            ))))
         };
         let hover_id = shortcut.node_id.clone();
         let target = shortcut.target;

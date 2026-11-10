@@ -58,9 +58,7 @@ impl NativeRoot {
                 .as_ref()
                 .and_then(|modal| modal.active_runtime())
             {
-                if self.remote_client.is_local() {
-                    self.request_model_catalog(runtime.name.key(), cx);
-                }
+                self.request_model_catalog(runtime.name.key(), cx);
             }
         }
         cx.notify();

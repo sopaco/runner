@@ -182,9 +182,9 @@ impl MissionWorkspace {
             let open_root = root.clone();
             let card_key_id = session_id.clone();
             let card_key_root = root.clone();
-            let status = self
-                .presentation
-                .status_presentation(&self.slot_agent_status(&session_id, cx));
+            let status = runner_app::ui::agent_status::StatusPresentation::new(
+                &self.slot_agent_status(&session_id, cx),
+            );
             let subtitle = runner_app::ui::agent_status::status_indicator(
                 status,
                 true,
@@ -197,16 +197,7 @@ impl MissionWorkspace {
                 || self.archiving
                 || self.slot_actions.contains(&session_id)
                 || self.transitions.contains_key(&session_id);
-            let available_controls = slot_controls(session.session.status)
-                .into_iter()
-                .filter(|action| {
-                    self.remote_supports(&[match action {
-                        SessionControlKind::Stop => "stop",
-                        SessionControlKind::Restart => "restart",
-                        _ => "resume",
-                    }])
-                })
-                .collect::<Vec<_>>();
+            let available_controls = slot_controls(session.session.status).to_vec();
             let controls = (!available_controls.is_empty()
                 && mission_slot_actions_available(
                     self.mission_view().as_ref().map(|mission| mission.status),
@@ -246,23 +237,21 @@ impl MissionWorkspace {
                             })
                         })
                     }))
-                    .when(!self.presentation.is_remote(), |controls| {
-                        controls.child(
-                            IconButton::new(
-                                SharedString::from(format!("remove-role-{session_id}")),
-                                "log-out.svg",
-                            )
-                            .size(runner_app::ui::IconButtonSize::Sm)
-                            .tooltip(crate::i18n::text("ui.remove_from_mission"))
-                            .stop_click_propagation(true)
-                            .disabled(disabled)
-                            .on_press(move |window, cx| {
-                                remove_root.update(cx, |this, cx| {
-                                    this.request_remove_role(&remove_id, window, cx)
-                                })
-                            }),
+                    .child(
+                        IconButton::new(
+                            SharedString::from(format!("remove-role-{session_id}")),
+                            "log-out.svg",
                         )
-                    })
+                        .size(runner_app::ui::IconButtonSize::Sm)
+                        .tooltip(crate::i18n::text("ui.remove_from_mission"))
+                        .stop_click_propagation(true)
+                        .disabled(disabled)
+                        .on_press(move |window, cx| {
+                            remove_root.update(cx, |this, cx| {
+                                this.request_remove_role(&remove_id, window, cx)
+                            })
+                        }),
+                    )
             });
             let handle_title = SharedString::from(format!("@{}", session.handle));
             let mut header_gap = rems(8. / 16.);
@@ -435,45 +424,43 @@ impl MissionWorkspace {
                                 |card| card.child(subtitle),
                             ),
                     )
-                    .when(!self.presentation.is_remote(), |card| {
-                        card.child(
-                            div()
-                                .pt_2()
-                                .flex()
-                                .gap_2()
-                                .border_t_1()
-                                .border_color(theme::with_alpha(theme::border(), 0.7))
-                                .text_size(theme::text_caption())
-                                .line_height(rems(14. / 16.))
-                                .child(
-                                    div()
-                                        .debug_selector(|| {
-                                            format!("MISSION_CARD_KEY_LABEL {session_id}")
-                                        })
-                                        .w(rems(72. / 16.))
-                                        .flex_none()
-                                        .text_color(theme::faint())
-                                        .child("session_key"),
-                                )
-                                .child(
-                                    div()
-                                        .min_w(px(0.))
-                                        .flex_1()
-                                        .flex()
-                                        .items_start()
-                                        .gap(rems(6. / 16.))
-                                        .child(key_value)
-                                        .children(copy.map(|copy| {
-                                            div()
-                                                .debug_selector(|| {
-                                                    format!("MISSION_CARD_KEY_COPY {session_id}")
-                                                })
-                                                .flex_none()
-                                                .child(copy)
-                                        })),
-                                ),
-                        )
-                    }),
+                    .child(
+                        div()
+                            .pt_2()
+                            .flex()
+                            .gap_2()
+                            .border_t_1()
+                            .border_color(theme::with_alpha(theme::border(), 0.7))
+                            .text_size(theme::text_caption())
+                            .line_height(rems(14. / 16.))
+                            .child(
+                                div()
+                                    .debug_selector(|| {
+                                        format!("MISSION_CARD_KEY_LABEL {session_id}")
+                                    })
+                                    .w(rems(72. / 16.))
+                                    .flex_none()
+                                    .text_color(theme::faint())
+                                    .child("session_key"),
+                            )
+                            .child(
+                                div()
+                                    .min_w(px(0.))
+                                    .flex_1()
+                                    .flex()
+                                    .items_start()
+                                    .gap(rems(6. / 16.))
+                                    .child(key_value)
+                                    .children(copy.map(|copy| {
+                                        div()
+                                            .debug_selector(|| {
+                                                format!("MISSION_CARD_KEY_COPY {session_id}")
+                                            })
+                                            .flex_none()
+                                            .child(copy)
+                                    })),
+                            ),
+                    ),
             );
         }
         if self.mission_composer_roster().is_empty() {
@@ -485,13 +472,11 @@ impl MissionWorkspace {
                     .child(crate::i18n::text("ui.mission_roster_empty")),
             );
         }
-        if !self.presentation.is_remote()
-            && mission_slot_actions_available(
-                self.mission_view().as_ref().map(|mission| mission.status),
-                self.archived(),
-                self.secondary,
-            )
-        {
+        if mission_slot_actions_available(
+            self.mission_view().as_ref().map(|mission| mission.status),
+            self.archived(),
+            self.secondary,
+        ) {
             let shell = self.shell.clone();
             let mission = self.mission.clone();
             let roster = self.roster.clone();
@@ -524,9 +509,6 @@ impl MissionWorkspace {
     }
 
     fn reveal_mission_cwd(&mut self, cwd: String, cx: &mut Context<Self>) {
-        if self.presentation.is_remote() {
-            return;
-        }
         let task = cx.background_spawn(async move {
             #[cfg(target_os = "macos")]
             {
@@ -638,56 +620,53 @@ impl MissionWorkspace {
                         .into_any_element(),
                 },
             ));
-        if !self.presentation.is_remote() {
-            panel = panel.child(meta_section(
-                crate::i18n::text("ui.working_dir"),
-                mission.cwd.clone().map_or_else(
-                    || {
-                        div()
-                            .text_size(theme::text_ui())
-                            .italic()
-                            .text_color(theme::faint())
-                            .child(crate::i18n::text("ui.no_cwd_set"))
-                            .into_any_element()
-                    },
-                    |cwd| {
-                        let reveal = cwd.clone();
-                        #[cfg(target_os = "macos")]
-                        let reveal_label = crate::i18n::text("ui.reveal_in_finder");
-                        #[cfg(target_os = "linux")]
-                        let reveal_label = crate::i18n::text("ui.open_working_directory");
-                        #[cfg(windows)]
-                        let reveal_label = crate::i18n::text("ui.reveal_in_explorer");
-                        Tooltip::new(
-                            "reveal-mission-cwd-tooltip",
-                            reveal_label,
-                            div()
-                                .id("reveal-mission-cwd")
-                                .w_full()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(theme::border())
-                                .bg(theme::panel())
-                                .px_2()
-                                .py_2()
-                                .cursor_pointer()
-                                .font_family(theme::UI_MONOSPACE_FONT)
-                                .text_size(theme::text_meta())
-                                .text_color(theme::text())
-                                .hover(|button| button.border_color(theme::border_strong()))
-                                .on_click(move |_, _, cx| {
-                                    let reveal = reveal.clone();
-                                    cwd_root
-                                        .update(cx, |this, cx| this.reveal_mission_cwd(reveal, cx));
-                                })
-                                .child(cwd),
-                        )
-                        .expand()
+        panel = panel.child(meta_section(
+            crate::i18n::text("ui.working_dir"),
+            mission.cwd.clone().map_or_else(
+                || {
+                    div()
+                        .text_size(theme::text_ui())
+                        .italic()
+                        .text_color(theme::faint())
+                        .child(crate::i18n::text("ui.no_cwd_set"))
                         .into_any_element()
-                    },
-                ),
-            ));
-        }
+                },
+                |cwd| {
+                    let reveal = cwd.clone();
+                    #[cfg(target_os = "macos")]
+                    let reveal_label = crate::i18n::text("ui.reveal_in_finder");
+                    #[cfg(target_os = "linux")]
+                    let reveal_label = crate::i18n::text("ui.open_working_directory");
+                    #[cfg(windows)]
+                    let reveal_label = crate::i18n::text("ui.reveal_in_explorer");
+                    Tooltip::new(
+                        "reveal-mission-cwd-tooltip",
+                        reveal_label,
+                        div()
+                            .id("reveal-mission-cwd")
+                            .w_full()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(theme::border())
+                            .bg(theme::panel())
+                            .px_2()
+                            .py_2()
+                            .cursor_pointer()
+                            .font_family(theme::UI_MONOSPACE_FONT)
+                            .text_size(theme::text_meta())
+                            .text_color(theme::text())
+                            .hover(|button| button.border_color(theme::border_strong()))
+                            .on_click(move |_, _, cx| {
+                                let reveal = reveal.clone();
+                                cwd_root.update(cx, |this, cx| this.reveal_mission_cwd(reveal, cx));
+                            })
+                            .child(cwd),
+                    )
+                    .expand()
+                    .into_any_element()
+                },
+            ),
+        ));
         panel
             .children(permission_mode.map(|mode| {
                 meta_section(
@@ -914,18 +893,4 @@ fn tracked_uppercase(label: &str) -> String {
         .map(|character| character.to_string())
         .collect::<Vec<_>>()
         .join("\u{2009}")
-}
-
-impl remote::MissionPresentation {
-    pub(super) fn status_presentation(
-        &self,
-        status: &runner_core::protocol::status::AgentStatus,
-    ) -> runner_app::ui::agent_status::StatusPresentation {
-        let mut display = runner_app::ui::agent_status::StatusPresentation::new(status);
-        if self.is_remote() {
-            display.waiting_since = None;
-            display.estimated = false;
-        }
-        display
-    }
 }

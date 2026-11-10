@@ -31,15 +31,6 @@ use crate::*;
 
 impl NativeRoot {
     pub(crate) fn open_crews(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() {
-            self.open_remote_library(
-                crate::surfaces::remote_client::RemoteItem::Crews,
-                window,
-                cx,
-            );
-            return;
-        }
-
         if self.route != AppRoute::Crews {
             self.crew_surfaces.list.reset();
             self.crew_surfaces
@@ -59,27 +50,12 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.remote_client.is_active() {
-            return;
-        }
-
         let editor = &mut self.crew_surfaces.editor;
         editor.conventions_expanded = false;
         editor.missions_expanded = false;
         editor.popup = None;
         self.enter_entity_route(AppRoute::CrewEditor(crew_id.clone()), window, cx);
         self.load_crew_editor(crew_id, cx);
-    }
-
-    pub(crate) fn set_crew_query(&mut self, query: String, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() {
-            let list = &mut self.crew_page_surfaces_mut().list;
-            let update = list.set_query(query);
-            list.apply_debounced_query(update.generation);
-            self.load_crew_page(cx);
-            return;
-        }
-        self.set_local_crew_query(query, cx);
     }
 
     pub(super) fn set_local_crew_query(&mut self, query: String, cx: &mut Context<Self>) {
@@ -105,25 +81,12 @@ impl NativeRoot {
     }
 
     pub(crate) fn set_crew_page(&mut self, page: usize, cx: &mut Context<Self>) {
-        if self.crew_page_surfaces_mut().list.set_page(page) {
-            self.crew_page_surfaces()
+        if self.crew_surfaces.list.set_page(page) {
+            self.crew_surfaces
                 .scroll
                 .set_offset(gpui::point(px(0.), px(0.)));
             self.load_crew_page(cx);
         }
-    }
-
-    pub(crate) fn set_crew_page_size(&mut self, size: usize, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() {
-            if self.crew_page_surfaces_mut().list.set_page_size(size) {
-                self.crew_page_surfaces()
-                    .scroll
-                    .set_offset(gpui::point(px(0.), px(0.)));
-                self.load_crew_page(cx);
-            }
-            return;
-        }
-        self.set_local_crew_page_size(size, cx);
     }
 
     pub(super) fn set_local_crew_page_size(&mut self, size: usize, cx: &mut Context<Self>) {
@@ -154,21 +117,7 @@ impl NativeRoot {
         }
     }
 
-    fn crew_page_surfaces(&self) -> &CrewSurfaces {
-        self.remote_client
-            .crew_surfaces()
-            .unwrap_or(&self.crew_surfaces)
-    }
-    fn crew_page_surfaces_mut(&mut self) -> &mut CrewSurfaces {
-        self.remote_client
-            .crew_surfaces_mut()
-            .unwrap_or(&mut self.crew_surfaces)
-    }
     pub(crate) fn load_crew_page(&mut self, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() {
-            self.remote_client.load_crew_page(cx);
-            return;
-        }
         self.load_local_crew_page(cx);
     }
 
@@ -192,7 +141,7 @@ impl NativeRoot {
                         if this.crew_surfaces.list.apply_success(
                             request_id,
                             runner_core::protocol::ListPage {
-                                items: page.items.into_iter().map(CrewListRow::Local).collect(),
+                                items: page.items,
                                 total_count: page.total_count,
                                 filtered_count: page.filtered_count,
                             },
@@ -232,17 +181,9 @@ impl NativeRoot {
         let empty_create_root = root.clone();
         let clear_root = root.clone();
         let page_root = root;
-        let query = self.crew_page_surfaces().list.query.clone();
-        let clear_client = self.front_page_client(cx);
-        let page_client = clear_client.clone();
-        let epoch = self.remote_client.ui.epoch;
-        let remote = self.remote_client.is_active();
-        let columns = if remote {
-            super::logic::crew_table_columns_with_history(self.crew_table_width(window, cx), false)
-        } else {
-            crew_table_columns(self.crew_table_width(window, cx))
-        };
-        let items = self.crew_page_surfaces().list.items.clone();
+        let query = self.crew_surfaces.list.query.clone();
+        let columns = crew_table_columns(self.crew_table_width(window, cx));
+        let items = self.crew_surfaces.list.items.clone();
         let last = items.len().saturating_sub(1);
         let now = chrono::Local::now();
         let rows = items
@@ -263,15 +204,14 @@ impl NativeRoot {
                     .text_size(theme::text_ui())
                     .line_height(rems(19. / 16.))
                     .text_color(theme::muted())
-                    .child(crate::i18n::text(if remote { "client.crews_search" } else { "ui.search_checks_crew_names_team_conventions_slot_and_role_handles_and_runtimes" })),
+                    .child(crate::i18n::text("ui.search_checks_crew_names_team_conventions_slot_and_role_handles_and_runtimes")),
             )
             .child(
                 Button::new("clear-crew-search", crate::i18n::text("ui.clear_search"))
                     .size(ButtonSize::Sm)
                     .on_press(move |_, cx| {
                         clear_root.update(cx, |this, cx| {
-                            if !this.remote_client.library_view_current(&clear_client, epoch, cx) { return; }
-                            this.crew_page_surfaces().search.update(cx, |search, search_cx| {
+                            this.crew_surfaces.search.update(cx, |search, search_cx| {
                                 search.set_value("", search_cx)
                             });
                         });
@@ -284,68 +224,47 @@ impl NativeRoot {
                 .size(rems(22. / 16.))
                 .text_color(theme::accent()),
             crate::i18n::text("ui.no_crews_yet"),
-            crate::i18n::text(if remote {
-                "client.crews_read_only"
-            } else {
-                "ui.a_crew_is_a_team_of_roles"
-            }),
-            div().when(!remote, |entry| {
-                entry
-                    .when(cfg!(test), |entry| {
-                        entry.debug_selector(|| "EMPTY_NEW_CREW".into())
-                    })
-                    .child(
-                        Button::new(
-                            "empty-new-crew",
-                            crate::i18n::text("ui.new_crew_inline_action"),
-                        )
-                        .variant(ButtonVariant::Primary)
-                        .on_press(move |window, cx| {
-                            empty_create_root
-                                .update(cx, |this, cx| this.open_create_crew(window, cx));
-                        }),
+            crate::i18n::text("ui.a_crew_is_a_team_of_roles"),
+            div()
+                .when(cfg!(test), |entry| {
+                    entry.debug_selector(|| "EMPTY_NEW_CREW".into())
+                })
+                .child(
+                    Button::new(
+                        "empty-new-crew",
+                        crate::i18n::text("ui.new_crew_inline_action"),
                     )
-            }),
+                    .variant(ButtonVariant::Primary)
+                    .on_press(move |window, cx| {
+                        empty_create_root.update(cx, |this, cx| this.open_create_crew(window, cx));
+                    }),
+                ),
         );
         PaginatedListPage::new(
             crate::i18n::text("ui.crews"),
-            div().child(crate::i18n::text(if remote {
-                "client.crews_read_only"
-            } else {
-                "ui.teams_of_roles_you_start_missions_from"
-            })),
+            div().child(crate::i18n::text(
+                "ui.teams_of_roles_you_start_missions_from",
+            )),
             div()
-                .when(remote, |entry| {
-                    entry.child(self.remote_client.render_library_refresh(cx))
+                .when(cfg!(test), |entry| {
+                    entry.debug_selector(|| "NEW_CREW".into())
                 })
-                .when(!remote, |entry| {
-                    entry
-                        .when(cfg!(test), |entry| {
-                            entry.debug_selector(|| "NEW_CREW".into())
-                        })
-                        .child(
-                            Button::new("new-crew", crate::i18n::text("ui.new_crew_inline_action"))
-                                .variant(ButtonVariant::Primary)
-                                .on_press(move |window, cx| {
-                                    create_root
-                                        .update(cx, |this, cx| this.open_create_crew(window, cx));
-                                }),
-                        )
-                }),
+                .child(
+                    Button::new("new-crew", crate::i18n::text("ui.new_crew_inline_action"))
+                        .variant(ButtonVariant::Primary)
+                        .on_press(move |window, cx| {
+                            create_root.update(cx, |this, cx| this.open_create_crew(window, cx));
+                        }),
+                ),
             crate::i18n::text("noun.crews"),
             empty_state,
-            self.crew_page_surfaces().search.clone(),
+            self.crew_surfaces.search.clone(),
             no_matches,
-            self.crew_page_surfaces().list.page,
-            self.crew_page_surfaces().list.page_count(),
+            self.crew_surfaces.list.page,
+            self.crew_surfaces.list.page_count(),
             Rc::new(move |page, _, cx| {
                 page_root.update(cx, |this, cx| {
-                    if this
-                        .remote_client
-                        .library_view_current(&page_client, epoch, cx)
-                    {
-                        this.set_crew_page(page, cx);
-                    }
+                    this.set_crew_page(page, cx);
                 });
             }),
             div()
@@ -357,23 +276,23 @@ impl NativeRoot {
                 .flex_col()
                 .flex_none()
                 .children(rows),
-            self.crew_page_surfaces().scroll.clone(),
-            self.crew_page_surfaces().scrollbar.clone(),
+            self.crew_surfaces.scroll.clone(),
+            self.crew_surfaces.scrollbar.clone(),
         )
         .header(crew_table_header(&columns))
         .page_size(
-            self.crew_page_surfaces().page_size.clone(),
+            self.crew_surfaces.page_size.clone(),
             self.crew_table_width(window, cx) < 480.,
         )
         .counts(
-            self.crew_page_surfaces().list.filtered_count,
-            self.crew_page_surfaces().list.total_count,
-            self.crew_page_surfaces().list.searching(),
+            self.crew_surfaces.list.filtered_count,
+            self.crew_surfaces.list.total_count,
+            self.crew_surfaces.list.searching(),
         )
         .load_state(
-            self.crew_page_surfaces().list.loading || self.app_store.read(cx).daemon_disconnected,
-            self.crew_page_surfaces().list.loaded,
-            self.crew_page_surfaces()
+            self.crew_surfaces.list.loading || self.app_store.read(cx).daemon_disconnected,
+            self.crew_surfaces.list.loaded,
+            self.crew_surfaces
                 .list
                 .error
                 .clone()
@@ -400,20 +319,20 @@ impl NativeRoot {
     fn set_crew_row_hovered(&mut self, id: &str, hovered: bool, cx: &mut Context<Self>) {
         let next = if hovered {
             Some(id.to_owned())
-        } else if self.crew_page_surfaces().hovered_row.as_deref() == Some(id) {
+        } else if self.crew_surfaces.hovered_row.as_deref() == Some(id) {
             None
         } else {
             return;
         };
-        if self.crew_page_surfaces().hovered_row != next {
-            self.crew_page_surfaces_mut().hovered_row = next;
+        if self.crew_surfaces.hovered_row != next {
+            self.crew_surfaces.hovered_row = next;
             cx.notify();
         }
     }
 
     fn render_crew_row(
         &self,
-        item: CrewListRow,
+        item: CrewListItem,
         columns: &[CrewColumn],
         divider: bool,
         now: &chrono::DateTime<chrono::Local>,
@@ -426,31 +345,25 @@ impl NativeRoot {
         let start_root = root.clone();
         let start_key_root = root.clone();
         let menu_root = root;
-        let local = item.local().is_some();
-        let id = item.id().to_owned();
+        let id = item.crew.id.clone();
         let hover_id = id.clone();
-        let hover_client = self.front_page_client(cx);
         let row_selector = id.clone();
         let start_selector = id.clone();
         let open_id = id.clone();
         let key_id = id.clone();
-        let menu_item = item.local().cloned();
+        let menu_item = Some(item.clone());
         let store = self.app_store.read(cx);
-        let missions = if local {
-            crew_missions(&store.missions, &id)
-        } else {
-            Vec::new()
-        };
-        let handles = item.handles();
-        let can_start = local
-            || self
-                .front_page_client(cx)
-                .supports(&["catalog", "startMission"]);
+        let missions = crew_missions(&store.missions, &id);
+        let handles = item
+            .members
+            .iter()
+            .map(|slot| slot.slot_handle.clone().into())
+            .collect::<Vec<_>>();
         let startable = !handles.is_empty();
         let start_item = item.clone();
         let start_key_item = item.clone();
         let start_button =
-            startable && self.crew_page_surfaces().hovered_row.as_deref() == Some(id.as_str());
+            startable && self.crew_surfaces.hovered_row.as_deref() == Some(id.as_str());
         let start = div()
             .id(SharedString::from(format!("crew-start-{id}")))
             .when(cfg!(test), |start| {
@@ -532,31 +445,24 @@ impl NativeRoot {
             .when(divider, |row| {
                 row.border_b_1().border_color(theme::border())
             })
-            .when(local, |row| row.cursor_pointer())
-            .tab_stop(local)
+            .cursor_pointer()
             .hover(|row| row.bg(theme::panel()))
             .focus_visible(|row| row.bg(theme::panel()))
             .on_hover(move |hovered, _, cx| {
                 hover_root.update(cx, |this, cx| {
-                    if this.front_page_client(cx).target == hover_client.target
-                        && (!hover_client.is_remote() || hover_client.valid())
-                    {
-                        this.set_crew_row_hovered(&hover_id, *hovered, cx);
-                    }
+                    this.set_crew_row_hovered(&hover_id, *hovered, cx);
                 });
             })
-            .when(local, |row| {
-                row.on_click(move |_, window, cx| {
-                    let crew_id = open_id.clone();
-                    open_root.update(cx, |this, cx| this.open_crew_editor(crew_id, window, cx));
-                })
-                .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        cx.stop_propagation();
-                        let crew_id = key_id.clone();
-                        key_root.update(cx, |this, cx| this.open_crew_editor(crew_id, window, cx));
-                    }
-                })
+            .on_click(move |_, window, cx| {
+                let crew_id = open_id.clone();
+                open_root.update(cx, |this, cx| this.open_crew_editor(crew_id, window, cx));
+            })
+            .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    cx.stop_propagation();
+                    let crew_id = key_id.clone();
+                    key_root.update(cx, |this, cx| this.open_crew_editor(crew_id, window, cx));
+                }
             })
             .child(
                 div()
@@ -583,7 +489,7 @@ impl NativeRoot {
                                     .text_size(theme::text_body())
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(theme::text())
-                                    .child(item.name().to_owned()),
+                                    .child(item.crew.name.clone()),
                             )
                             .child(
                                 div()
@@ -591,7 +497,7 @@ impl NativeRoot {
                                     .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(theme::text_meta())
                                     .text_color(theme::faint())
-                                    .child(item.summary()),
+                                    .child(logic::crew_summary(item.members.len())),
                             ),
                     ),
             )
@@ -613,17 +519,15 @@ impl NativeRoot {
                     .gap_1()
                     // The hovered button names itself; only an empty crew's
                     // disabled one needs a word.
-                    .when(can_start, |actions| {
-                        actions.child(if startable {
-                            start.into_any_element()
-                        } else {
-                            Tooltip::new(
-                                SharedString::from(format!("crew-start-tooltip-{id}")),
-                                crate::i18n::text("ui.add_a_slot_before_starting_a_mission"),
-                                start,
-                            )
-                            .into_any_element()
-                        })
+                    .child(if startable {
+                        start.into_any_element()
+                    } else {
+                        Tooltip::new(
+                            SharedString::from(format!("crew-start-tooltip-{id}")),
+                            crate::i18n::text("ui.add_a_slot_before_starting_a_mission"),
+                            start,
+                        )
+                        .into_any_element()
                     })
                     .children(menu_item.map(|menu_item| {
                         IconButton::new(
@@ -637,9 +541,7 @@ impl NativeRoot {
                             let position = window.mouse_position();
                             let item = menu_item.clone();
                             menu_root.update(cx, |this, cx| {
-                                if this.remote_client.is_local() {
-                                    this.open_crew_menu(item, position, window, cx);
-                                }
+                                this.open_crew_menu(item, position, window, cx);
                             });
                         })
                     })),
@@ -649,37 +551,11 @@ impl NativeRoot {
 
     fn start_list_crew_mission(
         &mut self,
-        row: CrewListRow,
+        row: CrewListItem,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match row {
-            CrewListRow::Local(item) if self.remote_client.is_local() => {
-                self.start_crew_mission(item.crew.id, window, cx)
-            }
-            CrewListRow::Remote {
-                crew,
-                target,
-                epoch,
-                ..
-            } if self.front_page_client(cx).target == target
-                && self.remote_client.ui.epoch == epoch
-                && matches!(
-                    self.remote_client.active_item(),
-                    Some(crate::surfaces::remote_client::RemoteItem::Crews)
-                ) =>
-            {
-                self.open_mission_launcher(
-                    Some(crew.id),
-                    runner_core::protocol::project::ProjectScope::or_root(
-                        self.active_project_id(cx),
-                    ),
-                    window,
-                    cx,
-                );
-            }
-            _ => {}
-        }
+        self.start_crew_mission(row.crew.id, window, cx);
     }
 
     fn start_crew_mission(&mut self, crew_id: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -794,7 +670,7 @@ fn crew_table_header(columns: &[CrewColumn]) -> AnyElement {
 
 fn crew_table_cell(
     column: CrewColumn,
-    item: &CrewListRow,
+    item: &CrewListItem,
     missions: &[&MissionSummary],
     now: &chrono::DateTime<chrono::Local>,
 ) -> AnyElement {
@@ -811,21 +687,22 @@ fn crew_table_cell(
             .gap_3()
             .overflow_hidden()
             .children(
-                match item {
-                    CrewListRow::Local(item) => runtime_counts(&item.members),
-                    CrewListRow::Remote { runtimes, .. } => runtimes.clone(),
-                }
-                .into_iter()
-                .map(|(runtime, count)| {
-                    let icon = ChatIcon::for_runtime(&runtime);
-                    div()
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .child(icon.render(rems(12. / 16.), icon.color(theme::muted(), true), true))
-                        .child(div().text_color(theme::muted()).child(count.to_string()))
-                }),
+                runtime_counts(&item.members)
+                    .into_iter()
+                    .map(|(runtime, count)| {
+                        let icon = ChatIcon::for_runtime(&runtime);
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(icon.render(
+                                rems(12. / 16.),
+                                icon.color(theme::muted(), true),
+                                true,
+                            ))
+                            .child(div().text_color(theme::muted()).child(count.to_string()))
+                    }),
             )
             .into_any_element(),
         CrewColumn::Missions => cell
@@ -865,81 +742,6 @@ fn crew_table_cell(
                 )
                 .into_any_element()
         }
-    }
-}
-
-impl CrewSurfaces {
-    pub(crate) fn load_remote_page(
-        &mut self,
-        catalog: &runner_core::companion::Catalog,
-        target: &crate::surfaces::front_page::FrontPageTarget,
-        window_epoch: u64,
-    ) -> bool {
-        let list = &mut self.list;
-        let request = list.begin_load();
-        let query = request.query.trim().to_lowercase();
-        let rows = catalog
-            .crews
-            .iter()
-            .filter(|crew| {
-                query.is_empty()
-                    || crew.name.to_lowercase().contains(&query)
-                    || crew.slots.iter().any(|slot| {
-                        slot.handle.to_lowercase().contains(&query)
-                            || catalog
-                                .roles
-                                .iter()
-                                .find(|role| role.id == slot.role)
-                                .is_some_and(|role| role.handle.to_lowercase().contains(&query))
-                    })
-            })
-            .map(|crew| {
-                let mut runtimes: Vec<(String, usize)> = Vec::new();
-                for slot in &crew.slots {
-                    if let Some(role) = catalog.roles.iter().find(|role| role.id == slot.role) {
-                        if let Some((_, count)) = runtimes
-                            .iter_mut()
-                            .find(|(runtime, _)| runtime == &role.runtime)
-                        {
-                            *count += 1;
-                        } else {
-                            runtimes.push((role.runtime.clone(), 1));
-                        }
-                    }
-                }
-                CrewListRow::Remote {
-                    role_handles: crew
-                        .slots
-                        .iter()
-                        .map(|slot| {
-                            catalog
-                                .roles
-                                .iter()
-                                .find(|role| role.id == slot.role)
-                                .map(|role| role.handle.clone())
-                        })
-                        .collect(),
-                    crew: crew.clone(),
-                    runtimes,
-                    target: target.clone(),
-                    epoch: window_epoch,
-                }
-            })
-            .collect::<Vec<_>>();
-        let filtered_count = rows.len() as i64;
-        let items = rows
-            .into_iter()
-            .skip((request.page - 1) * request.page_size)
-            .take(request.page_size)
-            .collect();
-        list.apply_success(
-            request.request_id,
-            runner_core::protocol::ListPage {
-                items,
-                total_count: catalog.crews.len() as i64,
-                filtered_count,
-            },
-        )
     }
 }
 

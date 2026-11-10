@@ -2,11 +2,7 @@ use super::*;
 
 impl NativeRoot {
     pub(crate) fn terminal_style(&self, cx: &App) -> crate::terminal::element::TerminalStyle {
-        let mut style = terminal_style_for(self.settings(cx));
-        if let Some(palette) = self.remote_client.remote_terminal_palette(cx) {
-            style.palette = palette;
-        }
-        style
+        terminal_style_for(self.settings(cx))
     }
 
     pub(crate) fn render_collapsed_titlebar_spacer(&self) -> Option<AnyElement> {
@@ -21,7 +17,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn page_navigation_state(&self) -> (bool, bool) {
-        let in_settings = self.route == AppRoute::Settings || self.remote_client.is_active();
+        let in_settings = self.route == AppRoute::Settings;
         let can_go_back =
             !in_settings && self.runtime_navigation_index.is_some_and(|index| index > 0);
         let can_go_forward = !in_settings
@@ -89,11 +85,6 @@ impl NativeRoot {
         persist: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.remote_client.is_active() {
-            self.remote_client.set_sidebar_collapsed(collapsed, cx);
-            return;
-        }
-
         let changed = self.sidebar_collapsed != collapsed;
         self.sidebar_collapsed = collapsed;
         if collapsed {
@@ -153,7 +144,6 @@ impl NativeRoot {
     }
 
     pub(crate) fn leave_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.dismiss_remote_dialog();
         if self.shortcut_recording_active() {
             self.finish_shortcut_recording(window, cx);
         }
@@ -217,7 +207,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn toggle_window_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.route == AppRoute::Settings && self.remote_client.is_local() {
+        if self.route == AppRoute::Settings {
             return;
         }
         let collapsed = !self.front_page_sidebar_collapsed();
@@ -225,11 +215,7 @@ impl NativeRoot {
         self.sidebar_preview_peeking = false;
         if !collapsed {
             self.sidebar_preview_open = false;
-            if let Some(workspace) = self.remote_client.remote_mission_workspace() {
-                workspace.update(cx, |workspace, cx| {
-                    workspace.focus_active_mission_terminal(window, cx)
-                });
-            } else if self.remote_client.is_local() && matches!(self.route, AppRoute::Mission(_)) {
+            if matches!(self.route, AppRoute::Mission(_)) {
                 self.mission_workspace.update(cx, |workspace, cx| {
                     workspace.focus_active_mission_terminal(window, cx);
                 });
@@ -246,7 +232,7 @@ impl NativeRoot {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.route == AppRoute::Settings && self.remote_client.is_local() {
+        if self.route == AppRoute::Settings {
             return;
         }
         let collapsed = !self.front_page_sidebar_collapsed();
@@ -361,11 +347,9 @@ impl NativeRoot {
     }
 
     pub(super) fn show_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.route == AppRoute::Settings && self.remote_client.is_local() {
+        if self.route == AppRoute::Settings {
             return;
         }
-        self.remote_client
-            .refresh_remote_palette(&self.command_palette, cx);
         self.command_palette
             .update(cx, |palette, palette_cx| palette.open(window, palette_cx));
     }

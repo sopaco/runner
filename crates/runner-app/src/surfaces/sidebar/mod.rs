@@ -18,9 +18,7 @@ mod view;
 
 use elements::sidebar_tab_target;
 
-pub(crate) use archive::{
-    archive_all_confirmation_body, archive_confirmation_counts, archive_targets_for_chats,
-};
+pub(crate) use archive::{archive_all_confirmation_body, archive_targets_for_chats};
 pub(crate) use elements::{
     default_session_label, direct_chat_display_status, project_children, session_label,
     session_label_live, sidebar_item_row, sidebar_section_header, SidebarItemView,
@@ -139,7 +137,6 @@ impl SidebarRenameTarget {
 }
 
 pub(crate) struct SidebarRename {
-    pending: bool,
     target: SidebarRenameTarget,
     input: Entity<TextField>,
 }
@@ -228,8 +225,6 @@ enum SidebarMenuAction {
         session_id: String,
     },
     ArchiveMission(String),
-    StopMission(String),
-    ResumeMission(String),
     DeleteProject(String),
 }
 
@@ -266,10 +261,6 @@ pub(crate) struct Sidebar {
     shell: WeakEntity<NativeRoot>,
     app_store: Entity<AppStore>,
     front_page: crate::surfaces::front_page::FrontPageClient,
-    pub(crate) remote_settings: Option<AppSettings>,
-    remote_layouts: HashMap<String, PaneLayout>,
-    remote_sessions: HashMap<String, SessionDisplay>,
-    remote_selection: Option<crate::surfaces::remote_client::RemoteItem>,
     store_revisions: StoreRevisions,
     scroll: ScrollHandle,
     scrollbar: Entity<Scrollbar>,
@@ -279,7 +270,6 @@ pub(crate) struct Sidebar {
     archiving_sessions: HashSet<String>,
     archiving_missions: HashSet<String>,
     active_project_id: Option<String>,
-    project_anchor: Option<Bounds<Pixels>>,
     window_id: u64,
     dragged_id: Option<String>,
     drop_target: Option<DropTarget>,

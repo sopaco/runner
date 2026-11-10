@@ -4,7 +4,6 @@
 use gpui::prelude::*;
 use gpui::{div, rems, svg, App, Entity};
 use runner_app::ui::{SelectHandler, SelectLeading, SelectOption, StyledSelect};
-use runner_core::companion::Catalog;
 use runner_core::protocol::project::{deepest_folder_of, ProjectRow, ProjectScope};
 
 use crate::theme;
@@ -24,18 +23,6 @@ impl ProjectChoice {
                 id: project.id.clone(),
                 name: project.name.clone(),
                 path: project.cwd.clone(),
-            })
-            .collect()
-    }
-
-    pub(crate) fn host(catalog: &Catalog) -> Vec<Self> {
-        catalog
-            .projects
-            .iter()
-            .map(|project| Self {
-                id: project.id.clone(),
-                name: project.name.clone(),
-                path: project.path.clone(),
             })
             .collect()
     }

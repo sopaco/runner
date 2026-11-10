@@ -363,27 +363,13 @@ fn top_right_pane(node: &PaneNode) -> &PaneLeaf {
     }
 }
 
-fn pane_action_indexes(
-    entry: &SessionDisplay,
-    client: &crate::surfaces::front_page::FrontPageClient,
-    secondary: bool,
-) -> Vec<usize> {
+fn pane_action_indexes(entry: &SessionDisplay, secondary: bool) -> Vec<usize> {
     let mut indexes = Vec::new();
     if entry.agent_runtime != "shell" && !secondary {
-        if client.supports(&[if entry.status == SessionStatus::Running {
-            "stop"
-        } else {
-            "resume"
-        }]) {
-            indexes.push(0);
-        }
-        if client.supports(&["catalog", "fork"]) {
-            indexes.push(1);
-        }
+        indexes.push(0);
+        indexes.push(1);
     }
-    if client.supports(&["rename"]) {
-        indexes.push(2);
-    }
+    indexes.push(2);
     indexes
 }
 

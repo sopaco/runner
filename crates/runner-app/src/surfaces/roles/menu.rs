@@ -101,7 +101,6 @@ impl NativeRoot {
         let core = self.front_page_client(cx);
         let role_id = role.id.clone();
         let recent_role = role.id.clone();
-        let target = core.target.clone();
         let directory = self.app_store.read(cx).app_data_dir.clone();
         let task = cx.background_spawn(async move {
             core.start_role_chat(role_id, cwd, (INITIAL_COLS, INITIAL_ROWS))
@@ -115,7 +114,6 @@ impl NativeRoot {
                     Ok(spawned) => {
                         crate::surfaces::start_chat::launcher::record_launcher_use(
                             &directory,
-                            &target,
                             crate::surfaces::start_chat::launcher_model::EntryKey::Role(
                                 recent_role,
                             ),
@@ -151,79 +149,6 @@ impl NativeRoot {
                         this.role_surfaces.detail.error = Some(error);
                     }
                     Err(error) => this.show_toast(error, crate::toast::ToastTone::Error, cx),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-}
-
-impl NativeRoot {
-    pub(crate) fn start_remote_role_direct(
-        &mut self,
-        role: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        use crate::surfaces::front_page::client::{ChatLaunch, ChatStart};
-        use crate::surfaces::start_chat::{
-            launcher::record_launcher_use, launcher_model::EntryKey,
-        };
-        let client = self.front_page_client(cx);
-        if self.role_page_surfaces().chat_pending.is_some()
-            || !client.supports(&["catalog", "startChat"])
-        {
-            return;
-        }
-        self.role_page_surfaces_mut().chat_pending = Some(role.clone());
-        let action = self.remote_client.prepare_chat_launch(client.clone(), None);
-        let directory = self.app_store.read(cx).app_data_dir.clone();
-        let target = client.target.clone();
-        let task = cx.background_spawn(async move {
-            let mut launch = ChatLaunch {
-                input: ChatStart {
-                    role: Some(role.clone()),
-                    runtime: None,
-                    model: None,
-                    effort: None,
-                    speed: None,
-                    project: None,
-                    cwd: None,
-                    size: (INITIAL_COLS, INITIAL_ROWS),
-                },
-                placement: None,
-                started: None,
-            };
-            let result = client.launch_chat(&mut launch);
-            if launch.started.is_some() {
-                record_launcher_use(&directory, &target, EntryKey::Role(role));
-            }
-            result
-        });
-        cx.spawn_in(window, async move |weak, cx| {
-            let result = task.await;
-            let _ = weak.update_in(cx, |root, _, cx| {
-                let Some(action) = action else {
-                    return;
-                };
-                if !root.remote_client.settle_chat_launch(&action) {
-                    return;
-                }
-                root.role_page_surfaces_mut().chat_pending = None;
-                match result {
-                    Ok(output) => {
-                        root.remote_client.complete_chat_launch(
-                            action,
-                            output.session,
-                            output.layout,
-                            cx,
-                        );
-                        root.sync_remote_state(cx);
-                    }
-                    Err(error) => {
-                        root.show_toast(error.to_string(), crate::toast::ToastTone::Error, cx)
-                    }
                 }
                 cx.notify();
             });

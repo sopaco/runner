@@ -7,7 +7,6 @@ pub enum ToastTone {
     Success,
     Error,
     Restart,
-    Warning,
 }
 
 impl ToastTone {
@@ -16,7 +15,6 @@ impl ToastTone {
             Self::Info => "info.svg",
             Self::Success => "circle-check.svg",
             Self::Error => "circle-x.svg",
-            Self::Warning => "triangle-alert.svg",
             Self::Restart => "rotate-cw.svg",
         }
     }
@@ -32,7 +30,6 @@ pub struct Toast {
     pub single_line: bool,
     pub icon: Option<&'static str>,
     pub bottom: bool,
-    pub open_remote: bool,
 }
 
 #[derive(Debug, Default)]
@@ -68,7 +65,6 @@ impl ToastHost {
             single_line: false,
             icon: None,
             bottom: false,
-            open_remote: false,
         });
         id
     }
@@ -82,23 +78,6 @@ impl ToastHost {
     pub fn make_single_line(&mut self) {
         if let Some(toast) = &mut self.active {
             toast.single_line = true;
-        }
-    }
-
-    pub fn pin_lock_warning(&mut self) {
-        if let Some(toast) = &mut self.active {
-            toast.icon = Some("lock.svg");
-            toast.bottom = true;
-            toast.single_line = true;
-        }
-    }
-
-    pub fn remote_pairing(&mut self) {
-        if let Some(toast) = &mut self.active {
-            toast.icon = Some("monitor.svg");
-            toast.bottom = true;
-            toast.single_line = true;
-            toast.open_remote = true;
         }
     }
 

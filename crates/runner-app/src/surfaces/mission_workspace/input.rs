@@ -9,8 +9,7 @@ use crate::*;
 
 impl MissionWorkspace {
     pub(crate) fn mark_active_session_viewed(&mut self, window: &Window, cx: &mut Context<Self>) {
-        if self.presentation.is_remote()
-            || !self.is_active(cx)
+        if !self.is_active(cx)
             || !window.is_window_active()
             || self.archived()
             || self.secondary
@@ -105,10 +104,7 @@ impl MissionWorkspace {
         }
         self.leave_active_slot_find(&MissionTab::Feed, cx);
         self.active_tab = MissionTab::Feed;
-        self.remote_navigation_changed(cx);
-        if !self.presentation.is_remote() {
-            crate::notifications::view_changed(cx);
-        }
+        crate::notifications::view_changed(cx);
         if self.feed_was_near_bottom {
             self.scroll_feed_to_bottom();
             self.feed_has_new_messages = false;
@@ -154,15 +150,7 @@ impl MissionWorkspace {
         let next = MissionTab::Session(session_id.to_owned());
         self.leave_active_slot_find(&next, cx);
         self.active_tab = next;
-        let selected_handle = self
-            .members()
-            .iter()
-            .find(|member| member.session.id == session_id)
-            .map(|member| member.handle.clone());
-        self.presentation.set_selected_handle(selected_handle);
-        if !self.presentation.is_remote() {
-            crate::notifications::view_changed(cx);
-        }
+        crate::notifications::view_changed(cx);
         self.mark_active_session_viewed(window, cx);
         if let Err(error) = self.ensure_mission_terminals_attached(window, cx) {
             self.error = Some(error.to_string().into());
@@ -212,14 +200,10 @@ impl MissionWorkspace {
         if self.active_tab == MissionTab::Session(session_id.to_owned()) {
             self.clear_feed_selection();
             self.active_tab = MissionTab::Feed;
-            self.remote_navigation_changed(cx);
-            if !self.presentation.is_remote() {
-                crate::notifications::view_changed(cx);
-            }
+            crate::notifications::view_changed(cx);
             window.focus(&self.root_focus, cx);
         }
         self.attached.remove(session_id);
-        self.remote_navigation_changed(cx);
         cx.notify();
     }
 
@@ -230,27 +214,6 @@ impl MissionWorkspace {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self
-            .attached
-            .get(session_id)
-            .is_some_and(|chat| !chat.terminal.control().desktop())
-        {
-            cx.stop_propagation();
-            if event.keystroke.key == "enter" && !event.is_held {
-                let ids = self.control_session_ids(cx);
-                let chats = if crate::terminal::control::mission_covered(
-                    ids.iter().map(|id| self.attached.get(id)),
-                ) {
-                    ids.iter()
-                        .filter_map(|id| self.attached.get(id))
-                        .collect::<Vec<_>>()
-                } else {
-                    self.attached.get(session_id).into_iter().collect()
-                };
-                crate::terminal::control::take_back(&chats, cx);
-            }
-            return;
-        }
         if !self.mission_terminal_interactive(session_id, cx) {
             return;
         }
@@ -378,15 +341,5 @@ impl MissionWorkspace {
         .detach();
         chat.terminal_focus.focus(window, cx);
         cx.notify();
-    }
-}
-
-impl MissionWorkspace {
-    pub(crate) fn close_visible_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.drawer_focused(window, cx) {
-            self.hide_terminal_drawer(window, cx);
-        } else if let MissionTab::Session(id) = self.active_tab.clone() {
-            self.close_mission_session_tab(&id, window, cx);
-        }
     }
 }

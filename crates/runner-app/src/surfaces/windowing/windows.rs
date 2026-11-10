@@ -18,10 +18,6 @@ pub(crate) fn close_tab(this: &mut NativeRoot, window: &mut Window, cx: &mut Con
         this.close_launcher_page(window, cx);
         return;
     }
-    if this.remote_client.is_active() {
-        this.close_remote_front_page(window, cx);
-        return;
-    }
     let drawer_focused = this.route == AppRoute::Chat
         && this.tabs.active().is_some_and(PaneLayout::drawer_open)
         && this.drawer_focus.contains_focused(window, cx);
@@ -103,6 +99,9 @@ pub(crate) fn handle_reopen(cx: &mut App) {
     cx.activate(true);
 }
 
+// Startup's NewWindow action keeps this reachable; test builds have no caller since
+// the remote bridge was removed.
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) fn open_new_runner_window(
     initial_route: Option<String>,
     cx: &mut App,

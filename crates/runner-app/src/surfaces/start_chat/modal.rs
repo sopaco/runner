@@ -11,11 +11,7 @@ impl NativeRoot {
             return;
         }
         if self.launcher_page_visible() {
-            if self.remote_client.is_active() {
-                self.select_remote_item(crate::surfaces::remote_client::RemoteItem::Launcher, cx);
-            } else {
-                self.set_route(AppRoute::Launcher, cx);
-            }
+            self.set_route(AppRoute::Launcher, cx);
             let launcher = self.render_launcher(None, true, window, cx);
             launcher.update(cx, |launcher, cx| {
                 launcher.open_step(launcher::Step::Start, window, cx)
@@ -37,15 +33,6 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) {
         self.open_launcher_page(scope, launcher::Step::Start, window, cx);
-    }
-
-    pub(crate) fn open_remote_role_chat(
-        &mut self,
-        role_id: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.start_remote_role_direct(role_id, window, cx);
     }
 
     pub(super) fn open_add_role_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -190,9 +177,6 @@ impl NativeRoot {
     }
 
     pub(crate) fn refresh_start_chat_runtimes(&mut self, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() {
-            return;
-        }
         self.refresh_launchers(cx);
         let (runtimes, _, _) = load_selectable_runtimes(self.core(cx), self.settings(cx));
         if let Some(modal) = self.start_chat_modal.as_mut() {

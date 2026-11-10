@@ -15,51 +15,31 @@ impl NativeRoot {
         {
             return;
         }
-        let remote = self.front_page_client(cx).is_remote();
-        if !remote {
-            if self.chat_secondary_state(session_id, cx).secondary {
-                return;
-            }
-            if !self.stopping_sessions.insert(session_id.to_owned()) {
-                return;
-            }
-            self.chat_error = None;
-            self.app_store.update(cx, |store, store_cx| {
-                store.remove_session_activity(session_id, store_cx)
-            });
-            if self.route == AppRoute::Chat
-                && self.active_focused_session_id().as_deref() == Some(session_id)
-            {
-                self.chat_focus.focus(window, cx);
-            }
-            cx.notify();
-        }
-        let Some(operation) =
-            WorkspaceAction::prepare(self, format!("session:{session_id}"), &["stop"], cx)
-        else {
+        if self.chat_secondary_state(session_id, cx).secondary {
             return;
-        };
-        let core = operation.client.clone();
+        }
+        if !self.stopping_sessions.insert(session_id.to_owned()) {
+            return;
+        }
+        self.chat_error = None;
+        self.app_store.update(cx, |store, store_cx| {
+            store.remove_session_activity(session_id, store_cx)
+        });
+        if self.route == AppRoute::Chat
+            && self.active_focused_session_id().as_deref() == Some(session_id)
+        {
+            self.chat_focus.focus(window, cx);
+        }
+        cx.notify();
+        let core = self.front_page_client(cx);
         let target = session_id.to_owned();
         let stop_target = target.clone();
         let stop = cx.background_spawn(async move {
             core.stop(&stop_target).map_err(|error| error.to_string())
         });
-        let origin_epoch = self.remote_client.ui.epoch;
         cx.spawn_in(window, async move |weak, cx| {
             let result = stop.await;
             let _ = weak.update_in(cx, |this, window, cx| {
-                let Some(result) =
-                    WorkspaceAction::complete(this, operation, result, |()| Default::default(), cx)
-                else {
-                    return;
-                };
-                if this.remote_client.ui.epoch != origin_epoch {
-                    this.stopping_sessions.remove(&target);
-                    this.chat_transitions.remove(&target);
-                    cx.notify();
-                    return;
-                }
                 this.stopping_sessions.remove(&target);
                 this.chat_transitions.remove(&target);
                 this.refresh_sessions(cx);
@@ -144,8 +124,7 @@ impl NativeRoot {
                         && !Runtime::parse(&entry.agent_runtime).is_some_and(Runtime::is_shell)
                 })
                 && !self.session_lifecycle_disabled(&session_id, cx)
-                && (self.remote_client.is_active()
-                    || !self.chat_transitions.contains_key(&session_id));
+                && !self.chat_transitions.contains_key(&session_id);
             if resumable {
                 if let Some(pane_id) = pane_ids.get(&session_id) {
                     self.resume_chat(pane_id, &session_id, window, cx);
@@ -217,9 +196,6 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.front_page_client(cx).supports(&["rename"]) {
-            return;
-        }
         let input = cx.new(|input_cx| {
             runner_app::ui::TextField::new(
                 input_cx.focus_handle(),

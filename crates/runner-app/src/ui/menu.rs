@@ -464,15 +464,6 @@ impl PopoverMenu {
         cx.notify();
     }
 
-    /// The labels as of the last render, which is when they follow the language.
-    #[cfg(test)]
-    pub(crate) fn labels(&self) -> Vec<String> {
-        self.items
-            .iter()
-            .map(|item| item.label.to_string())
-            .collect()
-    }
-
     fn restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.focus_handle.is_focused(window) {
             if let Some(focus) = self.return_focus.take() {

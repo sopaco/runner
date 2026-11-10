@@ -473,13 +473,6 @@ impl RoleColumn {
 /// The columns a table this wide shows beside Role. A narrow table drops the
 /// least telling columns first, and the Role column takes whatever is left.
 pub(super) fn role_table_columns(table_width: f32) -> Vec<RoleColumn> {
-    role_table_columns_with_activity(table_width, true)
-}
-
-pub(super) fn role_table_columns_with_activity(
-    table_width: f32,
-    activity: bool,
-) -> Vec<RoleColumn> {
     const PRIORITY: [RoleColumn; 5] = [
         RoleColumn::LastActive,
         RoleColumn::Runtime,
@@ -491,9 +484,6 @@ pub(super) fn role_table_columns_with_activity(
         table_width - 2. * ROLE_ROW_PADDING_X - ROLE_CELL_MIN_WIDTH - ROLE_ROW_ACTIONS_WIDTH;
     let mut shown = Vec::new();
     for column in PRIORITY {
-        if !activity && column == RoleColumn::LastActive {
-            continue;
-        }
         if column.width() > budget {
             break;
         }

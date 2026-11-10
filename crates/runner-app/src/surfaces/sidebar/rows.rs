@@ -87,9 +87,6 @@ impl Sidebar {
     }
 
     pub(super) fn resolved_sidebar_rows(&self, cx: &App) -> Vec<SidebarRow> {
-        if self.front_page.is_remote() {
-            return self.remote_rows(cx);
-        }
         let Some(shell) = self.shell.upgrade() else {
             return Vec::new();
         };
@@ -102,9 +99,6 @@ impl Sidebar {
         tabs: &TabSet,
         cx: &App,
     ) -> Vec<SidebarRow> {
-        if self.front_page.is_remote() {
-            return self.remote_rows(cx);
-        }
         let layouts = tabs
             .tabs()
             .iter()
@@ -355,7 +349,7 @@ impl Sidebar {
             .into_any_element()
         } else {
             if pane_tooltip {
-                rollup.render_pane_with_elapsed(id.clone(), !self.front_page.is_remote())
+                rollup.render_pane(id.clone())
             } else {
                 rollup.render(id.clone())
             }
@@ -425,11 +419,7 @@ impl Sidebar {
             Some(cx.on_focus_out(&focus, window, |this, _, window, cx| {
                 this.submit_sidebar_rename(window, cx);
             }));
-        self.rename = Some(SidebarRename {
-            pending: false,
-            target,
-            input,
-        });
+        self.rename = Some(SidebarRename { target, input });
         focus.focus(window, cx);
         cx.notify();
     }
@@ -439,14 +429,6 @@ impl Sidebar {
             return;
         };
         let client = self.front_page.clone();
-        let remote = client.is_remote();
-        if remote
-            && (rename.pending
-                || rename.input.read(cx).is_composing()
-                || !client.supports(&["rename"]))
-        {
-            return;
-        }
         let input = rename.input.clone();
         let name = input.read(cx).text().trim().to_owned();
         let (target, original) = match &rename.target {
@@ -486,15 +468,13 @@ impl Sidebar {
                 original,
             ),
         };
-        let unchanged = !remote
-            && (name == original.trim()
-                || (name.is_empty()
-                    && matches!(
-                        target.kind,
-                        runner_core::companion::ActionKind::Mission
-                            | runner_core::companion::ActionKind::Project
-                    )));
-        let guard = client.clone();
+        let unchanged = name == original.trim()
+            || (name.is_empty()
+                && matches!(
+                    target.kind,
+                    runner_core::companion::ActionKind::Mission
+                        | runner_core::companion::ActionKind::Project
+                ));
         let operation = move || {
             if unchanged {
                 Ok(())
@@ -504,46 +484,14 @@ impl Sidebar {
                     .map_err(|error| error.to_string())
             }
         };
-        if remote {
-            self.rename.as_mut().unwrap().pending = true;
-            let work = cx.background_spawn(async move { operation() });
-            cx.spawn_in(window, async move |weak, cx| {
-                let result = work.await;
-                let _ = weak.update_in(cx, |sidebar, window, cx| {
-                    if !guard.valid()
-                        || sidebar.front_page.target != guard.target
-                        || !sidebar
-                            .rename
-                            .as_ref()
-                            .is_some_and(|rename| rename.input == input)
-                    {
-                        return;
-                    }
-                    match result {
-                        Ok(()) => {
-                            sidebar.rename = None;
-                            sidebar._rename_focus_subscription = None;
-                            sidebar.focus_shell_terminal(window, cx);
-                        }
-                        Err(error) => {
-                            sidebar.rename.as_mut().unwrap().pending = false;
-                            sidebar.report_error(error, cx);
-                        }
-                    }
-                    cx.notify();
-                });
-            })
-            .detach();
-        } else {
-            self.rename = None;
-            self._rename_focus_subscription = None;
-            match operation() {
-                Ok(()) => self.refresh_store(StoreRefreshKind::All, cx),
-                Err(error) => self.report_error(error, cx),
-            }
-            self.focus_shell_terminal(window, cx);
-            cx.notify();
+        self.rename = None;
+        self._rename_focus_subscription = None;
+        match operation() {
+            Ok(()) => self.refresh_store(StoreRefreshKind::All, cx),
+            Err(error) => self.report_error(error, cx),
         }
+        self.focus_shell_terminal(window, cx);
+        cx.notify();
     }
 
     pub(super) fn cancel_sidebar_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {

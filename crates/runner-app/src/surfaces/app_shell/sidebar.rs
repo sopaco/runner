@@ -95,61 +95,52 @@ impl NativeRoot {
     ) -> Div {
         let zoom = self.settings(cx).app_zoom;
         let updater = global_updater(cx);
-        let update_hint = update_version
-            .filter(|_| self.remote_client.is_local())
-            .map(|version| {
-                let click_updater = updater.clone();
-                let click_root = cx.weak_entity();
-                #[cfg(target_os = "macos")]
-                let tooltip = crate::platform_ui::update_hint_tooltip(&version);
-                #[cfg(any(windows, target_os = "linux"))]
-                let tooltip =
-                    crate::platform_ui::update_hint_tooltip(&version, updater.read(cx).state());
-                Tooltip::new(
-                    "sidebar-update-tooltip",
-                    tooltip,
-                    div()
-                        .id("sidebar-update")
-                        .when(cfg!(test), |button| {
-                            button.debug_selector(|| "SIDEBAR_UPDATE".into())
-                        })
-                        .flex_none()
-                        .size(rems(24. / 16.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_sm()
-                        .border_1()
-                        .border_color(gpui::transparent_black())
-                        .cursor_pointer()
-                        .hover(|button| {
-                            button
-                                .border_color(alpha(theme::accent(), 0.4))
-                                .bg(alpha(theme::accent(), 0.1))
-                        })
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(move |_, _window, cx| {
-                            cx.stop_propagation();
-                            if !click_root
-                                .upgrade()
-                                .is_some_and(|root| root.read(cx).remote_client.is_local())
-                            {
-                                return;
-                            }
-                            #[cfg(target_os = "macos")]
-                            crate::platform_ui::activate_update_hint(&click_updater, cx);
-                            #[cfg(any(windows, target_os = "linux"))]
-                            crate::platform_ui::activate_update_hint(&click_updater, _window, cx);
-                        })
-                        .child(
-                            svg()
-                                .path("circle-arrow-down.svg")
-                                .flex_none()
-                                .size(px(14. * zoom))
-                                .text_color(theme::accent()),
-                        ),
-                )
-            });
+        let update_hint = update_version.map(|version| {
+            let click_updater = updater.clone();
+            #[cfg(target_os = "macos")]
+            let tooltip = crate::platform_ui::update_hint_tooltip(&version);
+            #[cfg(any(windows, target_os = "linux"))]
+            let tooltip =
+                crate::platform_ui::update_hint_tooltip(&version, updater.read(cx).state());
+            Tooltip::new(
+                "sidebar-update-tooltip",
+                tooltip,
+                div()
+                    .id("sidebar-update")
+                    .when(cfg!(test), |button| {
+                        button.debug_selector(|| "SIDEBAR_UPDATE".into())
+                    })
+                    .flex_none()
+                    .size(rems(24. / 16.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(gpui::transparent_black())
+                    .cursor_pointer()
+                    .hover(|button| {
+                        button
+                            .border_color(alpha(theme::accent(), 0.4))
+                            .bg(alpha(theme::accent(), 0.1))
+                    })
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(move |_, _window, cx| {
+                        cx.stop_propagation();
+                        #[cfg(target_os = "macos")]
+                        crate::platform_ui::activate_update_hint(&click_updater, cx);
+                        #[cfg(any(windows, target_os = "linux"))]
+                        crate::platform_ui::activate_update_hint(&click_updater, _window, cx);
+                    })
+                    .child(
+                        svg()
+                            .path("circle-arrow-down.svg")
+                            .flex_none()
+                            .size(px(14. * zoom))
+                            .text_color(theme::accent()),
+                    ),
+            )
+        });
         let active_only = self.front_page_sidebar().read(cx).active_only(cx);
         let active_toggle = IconButton::new("sidebar-active-toggle", "list-filter.svg")
             .size(IconButtonSize::Md)
@@ -168,13 +159,6 @@ impl NativeRoot {
                 move |_, cx| {
                     owner.update(cx, |this, cx| {
                         this.clear_sidebar_drag("change-view", cx);
-                        if this.remote_client.is_active() {
-                            this.front_page_sidebar()
-                                .update(cx, |sidebar, cx| sidebar.toggle_active_only(cx));
-                            this.sync_sidebar_shortcut_rows(cx);
-                            cx.notify();
-                            return;
-                        }
                         this.app_store.update(cx, |store, cx| {
                             store.update_settings(
                                 |settings| {
@@ -320,9 +304,7 @@ impl NativeRoot {
         let brand = self.render_sidebar_brand(update_version, cx);
         let enabled = self.settings(cx).model_runtimes();
         let visible_usage_runtimes = visible_usage_runtimes(&self.usage_installed, &enabled);
-        let show_usage = self.remote_client.is_local()
-            && !visible_usage_runtimes.is_empty()
-            && !self.front_page_sidebar_collapsed();
+        let show_usage = !visible_usage_runtimes.is_empty() && !self.front_page_sidebar_collapsed();
         let anchor_owner = cx.entity();
         let usage = show_usage.then(|| {
             let snapshot = self.app_store.read(cx).usage.clone();
@@ -386,14 +368,7 @@ impl NativeRoot {
                     .flex()
                     .items_center()
                     .children(usage)
-                    .children(
-                        self.remote_client
-                            .is_active()
-                            .then(|| self.remote_client.render_remote_connection(cx)),
-                    )
-                    .when(self.remote_client.is_local(), |footer| {
-                        footer.child(div().flex_1())
-                    })
+                    .child(div().flex_1())
                     .child(self.render_settings_button(cx)),
             );
         // The content keeps its full width while the wrapper animates, so the
@@ -408,9 +383,6 @@ impl NativeRoot {
             .pb_3()
             .children(titlebar)
             .child(brand)
-            .when(self.app_store.read(cx).remote_signed_in(), |sidebar| {
-                sidebar.child(self.remote_client.render_computer_trigger(cx))
-            })
             .child(self.front_page_sidebar())
             .child(footer)
             .children(
@@ -483,9 +455,7 @@ impl NativeRoot {
         &self,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        (self.front_page_sidebar_collapsed()
-            && (self.route != AppRoute::Settings || self.remote_client.is_active()))
-        .then(|| {
+        (self.front_page_sidebar_collapsed() && self.route != AppRoute::Settings).then(|| {
             div()
                 .id("sidebar-preview-trigger")
                 .absolute()

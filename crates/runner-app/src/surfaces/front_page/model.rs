@@ -1,8 +1,5 @@
-use runner_app::pane_layout::{PaneLayout, PaneLeaf, PaneNode, PaneSplit, SplitOrientation};
-use runner_core::companion::{ActionPane, Pane, SplitDirection, Tab};
-use runner_core::companion::{CatalogRole, Session};
+use runner_core::companion::CatalogRole;
 use runner_core::protocol::{model::Role, session::DirectSessionEntry};
-use std::collections::HashSet;
 
 #[derive(Clone)]
 pub(crate) struct SessionDisplay {
@@ -36,37 +33,6 @@ impl SessionDisplay {
         }
     }
 
-    pub(crate) fn remote(
-        id: &str,
-        session: &Session,
-        _pinned: bool,
-        native_fork: bool,
-        resumable: bool,
-    ) -> Self {
-        use runner_core::companion::{SessionKind, Status};
-        Self {
-            session_id: id.into(),
-            agent_runtime: if session.kind == SessionKind::Shell {
-                "shell".into()
-            } else {
-                session.runtime.clone().unwrap_or_default()
-            },
-            status: match session.status.status.effective() {
-                Status::Stopped => runner_core::protocol::model::SessionStatus::Stopped,
-                Status::Error => runner_core::protocol::model::SessionStatus::Crashed,
-                _ => runner_core::protocol::model::SessionStatus::Running,
-            },
-            title: (!session.title.is_empty()).then(|| session.title.clone()),
-            cwd: session.cwd.clone(),
-            resumable,
-            native_fork,
-            forkable: native_fork,
-            local: None,
-            archived_at: None,
-            project_id: None,
-        }
-    }
-
     pub(crate) fn label(&self, live: Option<&str>) -> String {
         if let Some(local) = &self.local {
             return crate::surfaces::sidebar::session_label_live(local, live);
@@ -84,242 +50,6 @@ impl SessionDisplay {
             crate::surfaces::roles::logic::runtime_display_name(&self.agent_runtime)
         }
     }
-}
-
-pub(crate) fn action_pane(node: &PaneNode) -> ActionPane {
-    match node {
-        PaneNode::Leaf(leaf) => ActionPane::Leaf {
-            id: leaf.id.clone(),
-            session: leaf.session_id.clone(),
-        },
-        PaneNode::Split(split) => {
-            let sum = split.sizes[0] as f64 + split.sizes[1] as f64;
-            ActionPane::Split {
-                id: split.id.clone(),
-                split: match split.orientation {
-                    SplitOrientation::Row => SplitDirection::Row,
-                    SplitOrientation::Column => SplitDirection::Column,
-                },
-                sizes: [split.sizes[0] as f64 / sum, split.sizes[1] as f64 / sum],
-                a: Box::new(action_pane(&split.a)),
-                b: Box::new(action_pane(&split.b)),
-            }
-        }
-    }
-}
-
-fn same_topology(node: &PaneNode, pane: &Pane) -> bool {
-    match (node, pane) {
-        (PaneNode::Leaf(leaf), Pane::Leaf { session }) => &leaf.session_id == session,
-        (PaneNode::Split(node), Pane::Split { split, a, b, .. }) => {
-            let orientation = if node.orientation == SplitOrientation::Row {
-                SplitDirection::Row
-            } else {
-                SplitDirection::Column
-            };
-            orientation == *split && same_topology(&node.a, a) && same_topology(&node.b, b)
-        }
-        _ => false,
-    }
-}
-
-fn matches_tree(node: &PaneNode, pane: &Pane) -> bool {
-    match (node, pane) {
-        (PaneNode::Leaf(leaf), Pane::Leaf { session }) => &leaf.session_id == session,
-        (PaneNode::Split(node), Pane::Split { split, sizes, a, b }) => {
-            let sum = sizes[0] + sizes[1];
-            let own_sum = node.sizes[0] + node.sizes[1];
-            let orientation = if node.orientation == SplitOrientation::Row {
-                SplitDirection::Row
-            } else {
-                SplitDirection::Column
-            };
-            orientation == *split
-                && ((node.sizes[0] / own_sum) as f64 - sizes[0] / sum).abs() < 0.0001
-                && matches_tree(&node.a, a)
-                && matches_tree(&node.b, b)
-        }
-        _ => false,
-    }
-}
-
-pub(crate) fn matches_layout(layout: &PaneLayout, tab: &Tab) -> bool {
-    matches_tree(&layout.root, &tab.panes) && layout.drawer_shells() == tab.shells
-}
-
-pub(crate) fn retain_presentation(layout: &mut PaneLayout, previous: &PaneLayout) {
-    layout.focus_pane(&previous.focused_pane_id);
-    layout.set_drawer_height(previous.drawer_height());
-    if let Some(shell) = previous.active_drawer_shell() {
-        layout.activate_drawer_shell(shell);
-    }
-    layout.set_drawer_open(previous.drawer_open());
-}
-
-pub(crate) fn reconcile_tab(
-    tab: &Tab,
-    old: Option<&PaneLayout>,
-    hint: Option<&PaneLayout>,
-) -> PaneLayout {
-    let source = hint.filter(|hint| matches_layout(hint, tab)).or(old);
-    let mut nodes = Vec::new();
-    fn collect<'a>(node: &'a PaneNode, nodes: &mut Vec<&'a PaneNode>) {
-        nodes.push(node);
-        if let PaneNode::Split(split) = node {
-            collect(&split.a, nodes);
-            collect(&split.b, nodes);
-        }
-    }
-    if let Some(source) = source {
-        collect(&source.root, &mut nodes);
-    }
-    fn id(node: &PaneNode) -> &str {
-        match node {
-            PaneNode::Leaf(n) => &n.id,
-            PaneNode::Split(n) => &n.id,
-        }
-    }
-    fn id_number(node: &PaneNode) -> Option<usize> {
-        match node {
-            PaneNode::Leaf(n) => n.id.get(1..)?.parse().ok(),
-            PaneNode::Split(n) => n.id.get(1..)?.parse().ok(),
-        }
-    }
-    let mut used = HashSet::new();
-    let mut counter = nodes
-        .iter()
-        .filter_map(|node| id_number(node))
-        .max()
-        .unwrap_or_default()
-        + 1;
-    fn reconcile(
-        pane: &Pane,
-        position: Option<&PaneNode>,
-        nodes: &[&PaneNode],
-        used: &mut HashSet<String>,
-        counter: &mut usize,
-    ) -> PaneNode {
-        let exact = nodes
-            .iter()
-            .copied()
-            .find(|node| !used.contains(id(node)) && same_topology(node, pane));
-        let candidate = match pane {
-            Pane::Leaf {
-                session: Some(session),
-            } => nodes.iter().copied().find(|node| {
-                matches!(node, PaneNode::Leaf(leaf) if leaf.session_id.as_ref() == Some(session))
-                    && !used.contains(id(node))
-            }),
-            Pane::Leaf { session: None } => position.filter(|n| {
-                matches!(n, PaneNode::Leaf(leaf) if leaf.session_id.is_none())
-                    && !used.contains(id(n))
-            }),
-            _ => None,
-        };
-        let empty_position = position.filter(|node| {
-            matches!(node, PaneNode::Leaf(leaf) if leaf.session_id.is_none())
-                && !used.contains(id(node))
-        });
-        let existing = exact.or(candidate).or(empty_position);
-        let key = existing.map(|n| id(n).to_owned()).unwrap_or_else(|| loop {
-            let key = format!(
-                "{}{}",
-                if matches!(pane, Pane::Split { .. }) {
-                    "s"
-                } else {
-                    "p"
-                },
-                *counter
-            );
-            *counter += 1;
-            if !nodes.iter().any(|n| id(n) == key) && !used.contains(&key) {
-                break key;
-            }
-        });
-        used.insert(key.clone());
-        match pane {
-            Pane::Split { split, sizes, a, b } => {
-                let previous = existing.or(position).and_then(|node| {
-                    if let PaneNode::Split(n) = node {
-                        Some(n)
-                    } else {
-                        None
-                    }
-                });
-                let total = sizes[0] + sizes[1];
-                let ratio = if sizes.iter().all(|s| s.is_finite() && *s > 0.) && total.is_finite() {
-                    (sizes[0] / total) as f32
-                } else {
-                    0.5
-                };
-                PaneNode::Split(PaneSplit {
-                    id: key,
-                    orientation: if *split == SplitDirection::Column {
-                        SplitOrientation::Column
-                    } else {
-                        SplitOrientation::Row
-                    },
-                    sizes: [ratio * 100., (1. - ratio) * 100.],
-                    a: Box::new(reconcile(
-                        a,
-                        previous.map(|n| n.a.as_ref()),
-                        nodes,
-                        used,
-                        counter,
-                    )),
-                    b: Box::new(reconcile(
-                        b,
-                        previous.map(|n| n.b.as_ref()),
-                        nodes,
-                        used,
-                        counter,
-                    )),
-                })
-            }
-            Pane::Leaf { session } => PaneNode::Leaf(PaneLeaf {
-                id: key,
-                session_id: session.clone(),
-            }),
-            Pane::Unknown(_) => PaneNode::Leaf(PaneLeaf {
-                id: key,
-                session_id: None,
-            }),
-        }
-    }
-    let mut layout = source
-        .cloned()
-        .unwrap_or_else(|| PaneLayout::single(None, &[]));
-    layout.id = tab.id.clone();
-    layout.parent_id = tab.project.clone();
-    layout.name = (!tab.name.is_empty()).then(|| tab.name.clone());
-    layout.root = reconcile(
-        &tab.panes,
-        source.map(|s| &s.root),
-        &nodes,
-        &mut used,
-        &mut counter,
-    );
-    if !layout
-        .root
-        .leaves()
-        .iter()
-        .any(|leaf| leaf.id == layout.focused_pane_id)
-    {
-        layout.focused_pane_id = layout.root.leaves()[0].id.clone();
-    }
-    let selected = layout.active_drawer_shell().map(str::to_owned);
-    let open = layout.drawer_open();
-    for shell in layout.drawer_shells().to_vec() {
-        layout.remove_drawer_shell(&shell);
-    }
-    for shell in &tab.shells {
-        layout.add_drawer_shell(shell.clone());
-    }
-    if let Some(selected) = selected {
-        layout.activate_drawer_shell(&selected);
-    }
-    layout.set_drawer_open(open);
-    layout
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -396,29 +126,6 @@ impl From<runner_core::protocol::runtime::RuntimeCatalogEntry> for RuntimeChoice
     }
 }
 impl RuntimeChoice {
-    pub(crate) fn remote(runtime: &runner_core::companion::CatalogRuntime) -> Option<Self> {
-        let name = runner_core::protocol::model::Runtime::parse(&runtime.name)?;
-        let option = |value: &runner_core::companion::CatalogOption| {
-            runner_core::protocol::runtime::RuntimeCatalogOption {
-                value: value.value.clone(),
-                label: value.label.clone(),
-                description: None,
-                supported_efforts: value.supported_efforts.clone(),
-            }
-        };
-        Some(Self {
-            name,
-            display_name: runtime.label.clone(),
-            command: None,
-            available: runtime.available,
-            default_model: runtime.default_model.clone(),
-            default_effort: runtime.default_effort.clone(),
-            models: runtime.models.iter().map(option).collect(),
-            efforts: runtime.efforts.iter().map(option).collect(),
-            speed: runtime.speeds.iter().any(|s| s == "fast"),
-            effort_needs_launch_model: runtime.name == "antigravity",
-        })
-    }
     pub(crate) fn efforts_for_model(
         &self,
         model: &str,
@@ -461,24 +168,6 @@ impl From<runner_core::protocol::node::NodeRow> for SidebarNodeDisplay {
             position: node.position,
             pinned_position: node.pinned_position,
             created_at: Some(node.created_at),
-        }
-    }
-}
-impl From<runner_core::companion::SidebarNode> for SidebarNodeDisplay {
-    fn from(node: runner_core::companion::SidebarNode) -> Self {
-        use runner_core::companion::SidebarNodeKind;
-        Self {
-            ref_id: (!matches!(node.kind, SidebarNodeKind::Tab)).then(|| node.id.clone()),
-            id: node.id,
-            parent_id: node.parent,
-            node_type: match node.kind {
-                SidebarNodeKind::Project => runner_core::protocol::node::NodeType::Project,
-                SidebarNodeKind::Mission => runner_core::protocol::node::NodeType::Mission,
-                _ => runner_core::protocol::node::NodeType::Tab,
-            },
-            position: node.position,
-            pinned_position: node.pinned_position,
-            created_at: None,
         }
     }
 }
@@ -528,20 +217,6 @@ impl From<runner_core::protocol::mission::MissionSummary> for MissionDisplay {
             },
             any_session_live: summary.any_session_live,
             session_statuses: summary.session_statuses,
-        }
-    }
-}
-
-impl SidebarNodeDisplay {
-    pub(crate) fn target(&self) -> runner_core::companion::ActionTarget {
-        use runner_core::{companion::ActionKind, protocol::node::NodeType};
-        runner_core::companion::ActionTarget {
-            kind: match self.node_type {
-                NodeType::Tab => ActionKind::Tab,
-                NodeType::Mission => ActionKind::Mission,
-                NodeType::Project => ActionKind::Project,
-            },
-            id: self.ref_id.clone().unwrap_or_else(|| self.id.clone()),
         }
     }
 }

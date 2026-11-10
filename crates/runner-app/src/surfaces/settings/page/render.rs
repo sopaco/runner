@@ -333,8 +333,6 @@ impl NativeRoot {
             SettingsPane::General => Some(self.render_general_settings(cx)),
             SettingsPane::Missions => Some(self.render_missions_settings(cx)),
             SettingsPane::Appearance => Some(self.render_appearance_settings(cx)),
-            SettingsPane::Account => Some(self.render_account_settings(cx)),
-            SettingsPane::Remote => Some(self.render_remote_settings(cx)),
             SettingsPane::Notifications => Some(self.render_notifications_settings(cx)),
             SettingsPane::Terminal => Some(self.render_terminal_settings(cx)),
             SettingsPane::Shortcuts => Some(self.render_shortcuts_settings(cx)),
