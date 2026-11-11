@@ -60,7 +60,6 @@ pub fn node_rename(state: &AppCore, id: String, name: String) -> Result<NodeRow>
 
 pub fn node_tab_upsert(state: &AppCore, input: NodeTabUpsertInput) -> Result<NodeRow> {
     let row = persist_tab_layout(state, input)?;
-    state.sessions.reconcile_tab_control(&row.id, &state.db)?;
     emit_layout_changed(state);
     Ok(row)
 }
@@ -617,89 +616,6 @@ mod tests {
     use super::*;
     use crate::events::AppEvent;
     use crate::test_support::{test_core, test_core_in};
-
-    #[test]
-    fn overlapping_tab_upserts_reconcile_current_membership_and_input_owner() {
-        use runner_core::companion::Controller;
-        use std::sync::{Arc, Barrier};
-        let state = test_core();
-        let a = create_tab(&state, &["a", "p"]);
-        let b = create_tab(&state, &["b"]);
-        let events: Arc<dyn crate::session::manager::SessionEvents> =
-            Arc::new(state.session_events());
-        for id in ["a", "p", "b"] {
-            state
-                .sessions
-                .prepare_unlisted_terminal(id, (80, 24), &state.db, &events)
-                .unwrap();
-        }
-        let input = state.sessions.record_terminal_input("p");
-        state
-            .sessions
-            .browser_resize("a", 1, "First", 80, 24, true, false, &state.db)
-            .unwrap();
-        state
-            .sessions
-            .browser_resize("b", 2, "Second", 80, 24, true, false, &state.db)
-            .unwrap();
-        let committed = Arc::new(Barrier::new(2));
-        let resume = Arc::new(Barrier::new(2));
-        let worker = {
-            let state = state.clone();
-            let committed = committed.clone();
-            let resume = resume.clone();
-            std::thread::spawn(move || {
-                let row = persist_tab_layout(
-                    &state,
-                    NodeTabUpsertInput {
-                        id: a.id,
-                        parent_id: None,
-                        name: "A".into(),
-                        layout: serde_json::json!({"slots": ["a", "p"]}).to_string(),
-                    },
-                )
-                .unwrap();
-                committed.wait();
-                resume.wait();
-                state
-                    .sessions
-                    .reconcile_tab_control(&row.id, &state.db)
-                    .unwrap();
-            })
-        };
-        committed.wait();
-        node_tab_upsert(
-            &state,
-            NodeTabUpsertInput {
-                id: b.id.clone(),
-                parent_id: None,
-                name: "B".into(),
-                layout: serde_json::json!({"slots": ["b", "p"]}).to_string(),
-            },
-        )
-        .unwrap();
-        resume.wait();
-        worker.join().unwrap();
-        assert_eq!(
-            repo::node::find_for_session(&state.db.get().unwrap(), "p")
-                .unwrap()
-                .unwrap()
-                .id,
-            b.id
-        );
-        assert_eq!(state.sessions.browser_controller("a", 1), Controller::You);
-        assert_eq!(state.sessions.browser_controller("p", 2), Controller::You);
-        assert!(state.sessions.browser_input("p", 1, b"stale").is_err());
-        assert!(input.try_recv().is_err());
-        state.sessions.browser_input("p", 2, b"current").unwrap();
-        assert_eq!(
-            input
-                .recv_timeout(std::time::Duration::from_secs(2))
-                .unwrap(),
-            b"current"
-        );
-        state.sessions.drain_terminal_workers();
-    }
 
     fn create_tab(state: &AppCore, session_ids: &[&str]) -> NodeRow {
         let layout = serde_json::json!({

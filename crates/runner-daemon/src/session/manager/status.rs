@@ -295,7 +295,6 @@ impl SessionManager {
     ) {
         if let Some(session) = self.session_state(session_id) {
             let mut session = session.lock().unwrap();
-            session.finish_companion_terminals();
             if let Some(terminal) = &session.terminal {
                 terminal.clear_program_status();
             }

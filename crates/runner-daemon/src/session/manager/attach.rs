@@ -26,10 +26,6 @@ impl SessionManager {
         let (input, worker) =
             self.start_terminal_input(session_id, Arc::clone(&terminal), Arc::clone(events));
         {
-            let mut control = self.terminal_control.lock().unwrap();
-            let controller = self
-                .inherited_controller(session_id, pool, &mut control)
-                .expect("read terminal control group before handle install");
             let state = self.session_state_or_insert(session_id);
             let mut state = state.lock().unwrap();
             if state
@@ -37,13 +33,11 @@ impl SessionManager {
                 .as_ref()
                 .is_some_and(|current| !Arc::ptr_eq(current, &terminal))
             {
-                state.finish_companion_terminals();
                 for (_, queue) in state.subscribers.drain(..) {
                     queue.close();
                 }
             }
             state.last_exit_was_killed = false;
-            state.controller = controller;
             state.terminal = Some(terminal);
             state.terminal_input = Some(input);
             state.terminal_input_worker = Some(worker);

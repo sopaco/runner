@@ -49,7 +49,6 @@ impl Transport for RecordingHost {
                 }
                 Response::terminal_metadata(Ok(TerminalMetadata::default()))
             }
-            Request::terminal_take_back { .. } => Response::terminal_take_back(Ok(())),
             Request::terminal_observe_input { input, .. } => {
                 if matches!(
                     input,

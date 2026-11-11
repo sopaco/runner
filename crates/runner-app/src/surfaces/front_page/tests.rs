@@ -10,64 +10,12 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 struct Fake {
-    requests: Mutex<Vec<(String, Value)>>,
     local: Mutex<Vec<&'static str>>,
 }
 
 impl Transport for Fake {
     fn call(&self, request: Request) -> Result<Response, ClientError> {
         Ok(match request {
-            Request::remote_request { computer, request } => {
-                let value = serde_json::to_value(&request).unwrap();
-                self.requests
-                    .lock()
-                    .unwrap()
-                    .push((computer, value.clone()));
-                let result = match value["type"].as_str().unwrap() {
-                    "overview" => json!({"deliberately": "not an overview"}),
-                    "startChat" | "startShell" | "resume" | "restart" | "fork" => {
-                        json!({"session": "same-id"})
-                    }
-                    "resumeMission" => {
-                        json!({"mission":value["mission"],"sessions":["resumed-member"]})
-                    }
-                    "layout" => json!({"target": value["target"]}),
-                    "createProject" => json!({"project":"host-project"}),
-                    "catalog" => {
-                        json!({"roles":[],"runtimes":[],"accounts":[],"activeAccount":"host-account","crews":[],"projects":[],"recentFolders":[]})
-                    }
-                    "folders" => {
-                        json!({"path": value["path"].as_str().unwrap_or("C:\\Users\\Jason"),"parent":null,"folders":[]})
-                    }
-                    _ => Value::Null,
-                };
-                Response::remote_request(Ok(runner_core::remote::RemoteResult {
-                    result,
-                    features: [
-                        "catalog",
-                        "folders",
-                        "startChat",
-                        "startShell",
-                        "stop",
-                        "resume",
-                        "restart",
-                        "fork",
-                        "close",
-                        "rename",
-                        "archive",
-                        "layout",
-                        "pin",
-                        "move",
-                        "reorderPinned",
-                        "createProject",
-                        "deleteProject",
-                        "stopMission",
-                        "resumeMission",
-                    ]
-                    .map(str::to_owned)
-                    .to_vec(),
-                }))
-            }
             Request::session_kill { .. } => {
                 self.local.lock().unwrap().push("stop");
                 Response::session_kill(Ok(()))
@@ -112,7 +60,6 @@ fn local_actions_keep_the_existing_daemon_calls_and_order() {
         *fake.local.lock().unwrap(),
         ["stop", "rename", "archive", "close"]
     );
-    assert!(fake.requests.lock().unwrap().is_empty());
 }
 
 #[derive(Default)]

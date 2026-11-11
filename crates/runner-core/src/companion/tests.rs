@@ -881,11 +881,6 @@ fn action_fields_are_required_when_load_bearing_and_debug_keeps_bodies_private()
         result: json!({"text":"private-body-canary"}),
     });
     assert!(!format!("{result:?}").contains("private-body-canary"));
-    let response = crate::protocol::Response::remote_request(Ok(crate::remote::RemoteResult {
-        result: json!({"text":"private-body-canary"}),
-        features: vec![],
-    }));
-    assert!(!format!("{response:?}").contains("private-body-canary"));
 }
 
 #[test]

@@ -207,13 +207,11 @@ struct SessionState {
     delivery_gate: Arc<DeliveryGate>,
     mission_status_sink: Option<ForwarderEmitCtx>,
     output_seq: u64,
-    controller: terminal::Controller,
     terminal: Option<Arc<runner_terminal::terminal::TerminalModel>>,
     terminal_input: Option<std::sync::mpsc::Sender<Vec<u8>>>,
     terminal_input_worker: Option<thread::JoinHandle<()>>,
     subscribers: Vec<(u64, Arc<terminal::FrameQueue>)>,
     next_subscriber_id: u64,
-    companion_terminals: Vec<Weak<terminal::CompanionTerminal>>,
     /// Latest grid measurement, including pushes that arrive before a PTY
     /// handle exists. Spawn and resume reconcile this under the state lock.
     last_requested_size: Option<(u16, u16)>,

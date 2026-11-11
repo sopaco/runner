@@ -29,11 +29,6 @@ pub enum InputEvent {
 pub enum TerminalController {
     #[default]
     Desktop,
-    Browser {
-        channel: u64,
-        name: String,
-    },
-    None,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

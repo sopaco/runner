@@ -292,12 +292,6 @@ impl Transport for ManagedTransport {
     fn attach(&self, id: &str) -> Result<TerminalAttachment, ClientError> {
         self.connected()?.attach(id)
     }
-    fn attach_remote(
-        &self,
-        config: crate::remote::RemoteTerminal,
-    ) -> Result<TerminalAttachment, ClientError> {
-        self.connected()?.attach_remote(config)
-    }
     fn input(&self, id: &str, bytes: &[u8]) -> Result<(), ClientError> {
         self.connected()?.input(id, bytes)
     }

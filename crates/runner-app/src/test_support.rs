@@ -12,7 +12,6 @@ pub(crate) fn core(
     runtime_discovery: Arc<RwLock<shell_path::DiscoveryState>>,
 ) -> AppCore {
     AppCore {
-        remote: Default::default(),
         db,
         app_data_dir,
         sessions,

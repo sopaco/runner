@@ -11,70 +11,11 @@ use super::*;
 
 const FRAME_CAPACITY: usize = 64;
 
-#[derive(Clone, Default, PartialEq)]
-pub(super) enum Controller {
-    #[default]
-    Desktop,
-    Browser {
-        channel: u64,
-        name: String,
-    },
-    None,
-}
-impl Controller {
-    pub(super) fn wire(&self) -> runner_core::protocol::terminal::TerminalController {
-        use runner_core::protocol::terminal::TerminalController as Wire;
-        match self {
-            Self::Desktop => Wire::Desktop,
-            Self::Browser { channel, name } => Wire::Browser {
-                channel: *channel,
-                name: name.clone(),
-            },
-            Self::None => Wire::None,
-        }
-    }
-}
+/// In-flight IME composition ownership, keyed by session and held by the
+/// connection whose preedit the daemon last observed.
 #[derive(Default)]
 pub(super) struct ControlState {
-    attachments: HashMap<(u64, String, u64), String>,
-    groups: HashMap<String, Controller>,
     compositions: HashMap<String, u64>,
-}
-
-pub(super) enum ResizeControl {
-    Desktop,
-    TakeBack,
-    Browser {
-        channel: u64,
-        name: String,
-        take: bool,
-        viewport: bool,
-    },
-}
-impl ResizeControl {
-    pub(super) fn apply(self, controller: &mut Controller) -> bool {
-        match self {
-            Self::Desktop => *controller == Controller::Desktop,
-            Self::TakeBack => {
-                *controller = Controller::Desktop;
-                true
-            }
-            Self::Browser {
-                channel,
-                name,
-                take,
-                viewport,
-            } => {
-                let owns = matches!(controller, Controller::Browser { channel: owner, .. } if *owner == channel);
-                if take || owns && viewport || !viewport && *controller == Controller::None {
-                    *controller = Controller::Browser { channel, name };
-                    true
-                } else {
-                    false
-                }
-            }
-        }
-    }
 }
 
 #[derive(Default)]
@@ -133,46 +74,6 @@ impl TerminalSubscription for Frames {
                 return Err(ClientError::msg("terminal stream closed"));
             }
             state = self.0.ready.wait(state).unwrap();
-        }
-    }
-}
-
-pub struct CompanionTerminal {
-    state: Weak<Mutex<SessionState>>,
-    history: usize,
-    final_snapshot: Mutex<Option<runner_core::protocol::terminal::TerminalSnapshot>>,
-}
-impl CompanionTerminal {
-    pub fn attach(&self) -> Result<TerminalAttachment> {
-        let state = self.state.upgrade();
-        let mut state = state.as_ref().map(|state| state.lock().unwrap());
-        if let Some(snapshot) = self.final_snapshot.lock().unwrap().take() {
-            let queue = Arc::new(FrameQueue::default());
-            queue.close();
-            return Ok(TerminalAttachment {
-                subscriber_id: 0,
-                snapshot,
-                frames: Box::new(Frames(queue)),
-            });
-        }
-        let state = state
-            .as_mut()
-            .ok_or_else(|| Error::msg("terminal released"))?;
-        SessionManager::attach_terminal_locked(state, self.history)
-    }
-}
-impl SessionState {
-    pub(super) fn finish_companion_terminals(&mut self) {
-        for source in self
-            .companion_terminals
-            .drain(..)
-            .filter_map(|source| source.upgrade())
-        {
-            if let Some(model) = &self.terminal {
-                let mut snapshot = model.snapshot_with_history(self.output_seq, source.history);
-                snapshot.controller = self.controller.wire();
-                *source.final_snapshot.lock().unwrap() = Some(snapshot);
-            }
         }
     }
 }
@@ -251,16 +152,12 @@ impl SessionManager {
     ) -> Result<()> {
         let model = self.create_terminal(id, size.0, size.1, pool, events)?;
         let (input, worker) = self.start_terminal_input(id, Arc::clone(&model), Arc::clone(events));
-        let mut control = self.terminal_control.lock().unwrap();
-        let controller = self.inherited_controller(id, pool, &mut control)?;
         let state = self.session_state_or_insert(id);
         let mut state = state.lock().unwrap();
-        state.finish_companion_terminals();
         for (_, queue) in state.subscribers.drain(..) {
             queue.close();
         }
         state.last_exit_was_killed = false;
-        state.controller = controller;
         state.terminal = Some(model);
         state.terminal_input = Some(input);
         state.terminal_input_worker = Some(worker);
@@ -345,27 +242,6 @@ impl SessionManager {
         let mut state = state.lock().unwrap();
         Self::attach_terminal_locked(&mut state, history)
     }
-    pub fn attach_companion_terminal(
-        &self,
-        id: &str,
-        history: usize,
-    ) -> Result<(TerminalAttachment, Arc<CompanionTerminal>)> {
-        let state = self
-            .session_state(id)
-            .ok_or_else(|| Error::msg("terminal not found"))?;
-        let source = Arc::new(CompanionTerminal {
-            state: Arc::downgrade(&state),
-            history: history.min(5000),
-            final_snapshot: Mutex::new(None),
-        });
-        let mut state = state.lock().unwrap();
-        let attachment = Self::attach_terminal_locked(&mut state, source.history)?;
-        state
-            .companion_terminals
-            .retain(|source| source.strong_count() != 0);
-        state.companion_terminals.push(Arc::downgrade(&source));
-        Ok((attachment, source))
-    }
     fn attach_terminal_locked(
         state: &mut SessionState,
         history: usize,
@@ -374,8 +250,7 @@ impl SessionManager {
             .terminal
             .as_ref()
             .ok_or_else(|| Error::msg("terminal not found"))?;
-        let mut snapshot = model.snapshot_with_history(state.output_seq, history);
-        snapshot.controller = state.controller.wire();
+        let snapshot = model.snapshot_with_history(state.output_seq, history);
         state.next_subscriber_id += 1;
         let subscriber_id = state.next_subscriber_id;
         let queue = Arc::new(FrameQueue::default());
@@ -410,13 +285,6 @@ impl SessionManager {
     }
 
     pub fn desktop_input(&self, id: &str, bytes: &[u8]) -> Result<()> {
-        let _control = self.terminal_control.lock().unwrap();
-        if !self
-            .session_state(id)
-            .is_some_and(|state| state.lock().unwrap().controller == Controller::Desktop)
-        {
-            return Err(Error::msg("terminal is controlled elsewhere"));
-        }
         self.queue_terminal_input(id, bytes)
     }
 
@@ -433,9 +301,6 @@ impl SessionManager {
                 .session_state(id)
                 .ok_or_else(|| Error::msg("terminal not found"))?;
             let state = state.lock().unwrap();
-            if state.controller != Controller::Desktop {
-                return Err(Error::msg("terminal is controlled elsewhere"));
-            }
             state
                 .terminal
                 .clone()
@@ -492,25 +357,6 @@ impl SessionManager {
         }
     }
 
-    pub(crate) fn take_terminal_input_control(
-        &self,
-        id: &str,
-        connection: u64,
-        pool: &DbPool,
-    ) -> Result<()> {
-        let mut control = self.terminal_control.lock().unwrap();
-        for id in self.control_group(id, pool)?.1 {
-            if control
-                .compositions
-                .get(&id)
-                .is_some_and(|owner| *owner != connection)
-            {
-                self.clear_composition(&id, &mut control);
-            }
-        }
-        Ok(())
-    }
-
     fn queue_terminal_input(&self, id: &str, bytes: &[u8]) -> Result<()> {
         let state = self
             .session_state(id)
@@ -559,307 +405,11 @@ impl SessionManager {
         // The sender also adopts the accepted size from the ordered frame stream.
         self.resize(id, cols, rows, pool)
     }
-    fn control_group(&self, id: &str, pool: &DbPool) -> Result<(String, Vec<String>)> {
-        let conn = pool.get()?;
-        let tab = crate::repo::node::find_for_session(&conn, id)?;
-        Ok(match tab {
-            Some(tab) => (tab.id.clone(), crate::repo::node::session_ids(&tab)),
-            None => (format!("session:{id}"), vec![id.to_owned()]),
-        })
-    }
-
-    pub(super) fn inherited_controller(
-        &self,
-        id: &str,
-        pool: &DbPool,
-        control: &mut ControlState,
-    ) -> Result<Controller> {
-        let (group, ids) = self.control_group(id, pool)?;
-        let controller = control.groups.entry(group).or_insert_with(|| {
-            ids.iter()
-                .filter(|other| other.as_str() != id)
-                .filter_map(|other| self.session_state(other))
-                .find_map(|state| {
-                    let state = state.lock().unwrap();
-                    state
-                        .terminal_input
-                        .as_ref()
-                        .map(|_| state.controller.clone())
-                })
-                .unwrap_or_default()
-        });
-        Ok(controller.clone())
-    }
-
-    pub(crate) fn reconcile_tab_control(&self, tab_id: &str, pool: &DbPool) -> Result<()> {
-        let mut control = self.terminal_control.lock().unwrap();
-        let conn = pool.get()?;
-        let Some(tab) = crate::repo::node::get(&conn, tab_id)? else {
-            return Ok(());
-        };
-        let controller = control.groups.entry(tab.id.clone()).or_default().clone();
-        let ids = crate::repo::node::session_ids(&tab);
-        for id in &ids {
-            control.groups.remove(&format!("session:{id}"));
-        }
-        self.set_group_controller(&ids, "", &controller, &mut control);
-        Ok(())
-    }
-
-    fn set_group_controller(
-        &self,
-        ids: &[String],
-        except: &str,
-        controller: &Controller,
-        control: &mut ControlState,
-    ) {
-        for id in ids.iter().filter(|id| id.as_str() != except) {
-            let Some(state) = self.session_state(id) else {
-                continue;
-            };
-            let mut state = state.lock().unwrap();
-            if state.terminal_input.is_none() || state.controller == *controller {
-                continue;
-            }
-            state.controller = controller.clone();
-            Self::push_controller(&mut state);
-            drop(state);
-            self.clear_composition(id, control);
-        }
-    }
-
-    fn push_controller(state: &mut SessionState) {
-        if let Some(model) = &state.terminal {
-            let (cols, rows) = model.size();
-            state.output_seq += 1;
-            Self::push_frame(
-                state,
-                TerminalFrame::Resized {
-                    seq: state.output_seq,
-                    cols,
-                    rows,
-                    controller: state.controller.wire(),
-                },
-            );
-        }
-    }
-
-    pub fn browser_input(&self, id: &str, channel: u64, bytes: &[u8]) -> Result<()> {
-        let _control = self.terminal_control.lock().unwrap();
-        let model = {
-            let state = self
-                .session_state(id)
-                .ok_or_else(|| Error::msg("terminal not found"))?;
-            let state = state.lock().unwrap();
-            if !matches!(state.controller, Controller::Browser { channel: owner, .. } if owner == channel)
-            {
-                return Err(Error::msg("terminal is controlled elsewhere"));
-            }
-            state
-                .terminal
-                .clone()
-                .ok_or_else(|| Error::msg("terminal not found"))?
-        };
-        model.observe_input(&crate::companion::classify_input(bytes));
-        self.queue_terminal_input(id, bytes)
-    }
-
-    pub fn browser_attached(
-        &self,
-        id: &str,
-        subscriber: u64,
-        channel: u64,
-        pool: &DbPool,
-    ) -> Result<()> {
-        let mut attachments = self.terminal_control.lock().unwrap();
-        let (group, _) = self.control_group(id, pool)?;
-        attachments
-            .attachments
-            .insert((channel, id.to_owned(), subscriber), group);
-        Ok(())
-    }
-
-    pub fn browser_detached(
-        &self,
-        id: &str,
-        subscriber: u64,
-        channel: u64,
-        release: bool,
-        pool: &DbPool,
-    ) -> Result<()> {
-        let mut attachments = self.terminal_control.lock().unwrap();
-        let group = match attachments
-            .attachments
-            .remove(&(channel, id.to_owned(), subscriber))
-        {
-            Some(group) => group,
-            None if subscriber == 0 => self.control_group(id, pool)?.0,
-            None => return Ok(()),
-        };
-        if !release {
-            return Ok(());
-        }
-        let conn = pool.get()?;
-        let ids = if let Some(tab) = crate::repo::node::get(&conn, &group)? {
-            crate::repo::node::session_ids(&tab)
-        } else if group == format!("session:{id}") {
-            vec![id.to_owned()]
-        } else {
-            Vec::new()
-        };
-        drop(conn);
-        let current_group = self.control_group(id, pool)?.0;
-        if current_group.starts_with("session:")
-            && current_group != group
-            && !attachments
-                .attachments
-                .keys()
-                .any(|(owner, member, _)| *owner == channel && member == id)
-        {
-            self.release_browser_locked(id, channel);
-        }
-        if attachments
-            .attachments
-            .iter()
-            .any(|((owner, _, _), other)| *owner == channel && *other == group)
-        {
-            return Ok(());
-        }
-        if matches!(attachments.groups.get(&group), Some(Controller::Browser { channel: owner, .. }) if *owner == channel)
-        {
-            attachments.groups.insert(group, Controller::None);
-        }
-        for id in ids {
-            self.release_browser_locked(&id, channel);
-        }
-        Ok(())
-    }
-
-    pub fn take_back_terminal(
-        &self,
-        id: &str,
-        cols: u16,
-        rows: u16,
-        pool: &Arc<DbPool>,
-    ) -> Result<()> {
-        let mut control = self.terminal_control.lock().unwrap();
-        let (group, ids) = self.control_group(id, pool)?;
-        control.groups.insert(group, Controller::Desktop);
-        self.set_group_controller(&ids, id, &Controller::Desktop, &mut control);
-        self.resize_controlled(id, cols, rows, pool, ResizeControl::TakeBack)
-    }
-    #[allow(clippy::too_many_arguments)]
-    pub fn browser_resize(
-        &self,
-        id: &str,
-        channel: u64,
-        name: &str,
-        cols: u16,
-        rows: u16,
-        take: bool,
-        viewport: bool,
-        pool: &Arc<DbPool>,
-    ) -> Result<()> {
-        let mut control = self.terminal_control.lock().unwrap();
-        self.terminal_model(id)?;
-        if take || !viewport {
-            let (group, ids) = self.control_group(id, pool)?;
-            let free = ids
-                .iter()
-                .filter_map(|id| self.session_state(id))
-                .all(|state| {
-                    let state = state.lock().unwrap();
-                    state.terminal_input.is_none() || state.controller == Controller::None
-                });
-            if !take
-                && !viewport
-                && !free
-                && self
-                    .session_state(id)
-                    .is_some_and(|state| state.lock().unwrap().controller == Controller::None)
-            {
-                return Ok(());
-            }
-            if take || !viewport && free {
-                control.groups.insert(
-                    group,
-                    Controller::Browser {
-                        channel,
-                        name: name.into(),
-                    },
-                );
-                self.set_group_controller(
-                    &ids,
-                    id,
-                    &Controller::Browser {
-                        channel,
-                        name: name.into(),
-                    },
-                    &mut control,
-                );
-                self.clear_composition(id, &mut control);
-            }
-        }
-        self.resize_controlled(
-            id,
-            cols.clamp(20, 512),
-            rows.clamp(8, 256),
-            pool,
-            ResizeControl::Browser {
-                channel,
-                name: name.into(),
-                take,
-                viewport,
-            },
-        )
-    }
-    #[cfg(test)]
-    pub fn release_browser(&self, id: &str, channel: u64) {
-        let _control = self.terminal_control.lock().unwrap();
-        self.release_browser_locked(id, channel);
-    }
-    fn release_browser_locked(&self, id: &str, channel: u64) {
-        if let Some(state) = self.session_state(id) {
-            let mut state = state.lock().unwrap();
-            if matches!(state.controller, Controller::Browser { channel: owner, .. } if owner == channel)
-            {
-                state.controller = Controller::None;
-                Self::push_controller(&mut state);
-            }
-        }
-    }
-    pub fn release_browser_channel(&self, channel: u64) {
-        let mut attachments = self.terminal_control.lock().unwrap();
-        attachments
-            .attachments
-            .retain(|(owner, _, _), _| *owner != channel);
-        for controller in attachments.groups.values_mut() {
-            if matches!(controller, Controller::Browser { channel: owner, .. } if *owner == channel)
-            {
-                *controller = Controller::None;
-            }
-        }
-        let ids: Vec<_> = self.sessions.lock().unwrap().keys().cloned().collect();
-        for id in ids {
-            self.release_browser_locked(&id, channel);
-        }
-    }
     pub fn terminal_was_stopped(&self, id: &str) -> bool {
         self.session_state(id).is_some_and(|state| {
             let state = state.lock().unwrap();
             state.killed || state.last_exit_was_killed
         })
-    }
-    pub fn browser_controller(&self, id: &str, channel: u64) -> runner_core::companion::Controller {
-        use runner_core::companion::Controller as Wire;
-        self.session_state(id)
-            .map(|state| match &state.lock().unwrap().controller {
-                Controller::Desktop => Wire::Desktop,
-                Controller::None => Wire::None,
-                Controller::Browser { channel: owner, .. } if *owner == channel => Wire::You,
-                Controller::Browser { name, .. } => Wire::Browser { name: name.clone() },
-            })
-            .unwrap_or(Wire::None)
     }
 }
 
@@ -880,7 +430,7 @@ pub fn metadata(core: &crate::AppCore, id: &str) -> Result<TerminalMetadata> {
         link_cwd: None,
         cols,
         rows,
-        controller: state.controller.wire(),
+        controller: Default::default(),
     })
 }
 pub fn link_cwd(core: &crate::AppCore, id: &str) -> Result<Option<PathBuf>> {

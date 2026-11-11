@@ -14,42 +14,8 @@ pub const FORK_MATERIALIZE_TIMEOUT: Duration = Duration::from_secs(120);
 pub const FORK_REQUEST_TIMEOUT: Duration =
     Duration::from_secs(FORK_MATERIALIZE_TIMEOUT.as_secs() + 30);
 
-pub const REMOTE_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
-
-pub fn companion_request_timeout(request: &crate::companion::ClientMessage) -> Duration {
-    if matches!(
-        request,
-        crate::companion::ClientMessage::Action(action) if matches!(action.as_ref(), crate::companion::ActionRequest::Fork { .. })
-    ) {
-        FORK_REQUEST_TIMEOUT
-    } else {
-        Duration::from_secs(30)
-    }
-}
-
 fn request_timeout(request: &Request, timeout: Duration) -> Option<Duration> {
     match request {
-        Request::remote_request { request, .. } => Some(
-            timeout
-                .max(REMOTE_REQUEST_TIMEOUT)
-                .max(companion_request_timeout(request) + Duration::from_secs(10)),
-        ),
-        Request::remote_enroll_start { .. }
-        | Request::remote_enroll_confirm { .. }
-        | Request::remote_enroll_cancel { .. }
-        | Request::remote_set_paused { .. }
-        | Request::remote_retry { .. }
-        | Request::remote_logout { .. }
-        | Request::remote_set_pin { .. }
-        | Request::remote_unlock_pin { .. }
-        | Request::remote_revoke_device { .. }
-        | Request::remote_reset_identity { .. }
-        | Request::remote_computers { .. }
-        | Request::remote_pair { .. }
-        | Request::remote_forget { .. }
-        | Request::remote_overview { .. }
-        | Request::remote_follow { .. }
-        | Request::remote_take_control { .. } => Some(timeout.max(REMOTE_REQUEST_TIMEOUT)),
         Request::session_fork { .. } => Some(timeout.max(FORK_REQUEST_TIMEOUT)),
         _ => Some(timeout),
     }
@@ -627,13 +593,7 @@ impl Transport for SocketTransport {
         *self.observer.lock().unwrap() = Some(observer);
     }
     fn attach(&self, session_id: &str) -> Result<TerminalAttachment, ClientError> {
-        self.attach_terminal(session_id, None)
-    }
-    fn attach_remote(
-        &self,
-        config: crate::remote::RemoteTerminal,
-    ) -> Result<TerminalAttachment, ClientError> {
-        self.attach_terminal(&config.address(), Some(&config))
+        self.attach_terminal(session_id)
     }
     fn input(&self, session_id: &str, bytes: &[u8]) -> Result<(), ClientError> {
         let _ordered = self.one_way.lock().unwrap();
@@ -666,11 +626,7 @@ impl Transport for SocketTransport {
     }
 }
 impl SocketTransport {
-    fn attach_terminal(
-        &self,
-        session_id: &str,
-        config: Option<&crate::remote::RemoteTerminal>,
-    ) -> Result<TerminalAttachment, ClientError> {
+    fn attach_terminal(&self, session_id: &str) -> Result<TerminalAttachment, ClientError> {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (done, result) = mpsc::channel();
         let queue = Arc::new(Frames::default());
@@ -688,20 +644,9 @@ impl SocketTransport {
         frame
             .payload
             .extend(wire::session_payload(session_id).map_err(client_error)?);
-        if let Some(config) = config {
-            frame.payload.extend(
-                serde_json::to_vec(config).map_err(|_| {
-                    ClientError::msg("Could not encode remote terminal configuration")
-                })?,
-            );
-        }
         let snapshot = self.send(frame).and_then(|()| {
             result
-                .recv_timeout(if config.is_some() {
-                    self.timeout.max(REMOTE_REQUEST_TIMEOUT)
-                } else {
-                    self.timeout
-                })
+                .recv_timeout(self.timeout)
                 .map_err(|_| ClientError::msg("runnerd attach deadline exceeded"))?
         });
         self.attaching.lock().unwrap().remove(&id);
@@ -1054,66 +999,5 @@ mod deadline_tests {
                 Some(Duration::from_secs(30))
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod remote_deadline_tests {
-    use super::*;
-    #[test]
-    fn remote_budgets_cover_service_calls_and_enrollment_retries() {
-        for request in [
-            Request::remote_enroll_start {
-                origin: None,
-                confirm_account: true,
-            },
-            Request::remote_enroll_confirm { allow: true },
-            Request::remote_enroll_cancel {},
-            Request::remote_set_paused { paused: false },
-            Request::remote_retry {},
-            Request::remote_logout {},
-            Request::remote_set_pin {
-                pin: crate::remote::Secret("001234".into()),
-            },
-            Request::remote_unlock_pin {},
-            Request::remote_revoke_device {
-                fingerprint: "device".into(),
-            },
-            Request::remote_reset_identity {},
-            Request::remote_request {
-                computer: "computer".into(),
-                request: crate::companion::ClientMessage::Overview(
-                    crate::companion::OverviewRequest { id: 1 },
-                ),
-            },
-        ] {
-            assert_eq!(
-                request_timeout(&request, REQUEST_TIMEOUT),
-                Some(REMOTE_REQUEST_TIMEOUT)
-            );
-            assert_eq!(
-                request_timeout(&request, Duration::from_secs(60)),
-                Some(Duration::from_secs(60))
-            );
-            assert!(REMOTE_REQUEST_TIMEOUT > Duration::from_secs(30));
-        }
-        for request in [Request::remote_status {}, Request::remote_trust {}] {
-            for timeout in [REQUEST_TIMEOUT, Duration::from_millis(200)] {
-                assert_eq!(request_timeout(&request, timeout), Some(timeout));
-            }
-        }
-        let fork = crate::companion::ClientMessage::decode(
-            br#"{"type":"fork","id":1,"session":"source","cols":80,"rows":24}"#,
-        )
-        .unwrap();
-        assert_eq!(companion_request_timeout(&fork), FORK_REQUEST_TIMEOUT);
-        let request = Request::remote_request {
-            computer: "computer".into(),
-            request: fork,
-        };
-        assert_eq!(
-            request_timeout(&request, REQUEST_TIMEOUT),
-            Some(FORK_REQUEST_TIMEOUT + Duration::from_secs(10))
-        );
     }
 }

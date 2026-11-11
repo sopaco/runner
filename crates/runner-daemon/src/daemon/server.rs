@@ -7,7 +7,7 @@ use runner_core::app_paths::IpcEndpoint;
 use runner_core::daemon_process::{
     self, NativePaths, RESUME_SHUTDOWN_TIMEOUT, RUNTIME_SHUTDOWN_TIMEOUT, SHUTDOWN_TIMEOUT,
 };
-use runner_core::protocol::terminal::{TerminalAttachment, TerminalFrame, TerminalSubscription};
+use runner_core::protocol::terminal::{TerminalAttachment, TerminalFrame};
 use runner_core::protocol::wire::{self, Binary, Frame};
 use runner_core::protocol::{ClientError, Request, Response};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -174,7 +174,7 @@ async fn serve(config: Config, core: AppCore, hash: String, settings: Settings) 
 
 async fn serve_with_listener(
     config: Config,
-    mut core: AppCore,
+    core: AppCore,
     hash: String,
     settings: Settings,
     mut listener: IpcListener,
@@ -190,16 +190,6 @@ async fn serve_with_listener(
             None
         }
     };
-    core.remote = crate::remote::spawn(
-        core.app_data_dir.clone(),
-        core.events.clone(),
-        config.isolated,
-    );
-    let companion_core = Arc::new(core.clone());
-    core.remote
-        .set_companion_core(Arc::new(crate::companion::core::DaemonCore(
-            Arc::downgrade(&companion_core),
-        )));
     core.sessions.set_hook_endpoint(config.endpoint.clone());
     #[cfg(unix)]
     let daemon_file = Identity::new(config.endpoint.clone())?;
@@ -290,7 +280,6 @@ async fn serve_with_listener(
     drop(sentinel);
     core.usage.set_polling_enabled(false);
     cancel.cancel();
-    core.remote.shutdown().await;
     let shutdown_core = core.clone();
     let teardown = tokio::task::spawn_blocking(move || -> Result<()> {
         resume_consumer.stop();
@@ -469,35 +458,26 @@ impl Drop for Connected {
 struct Attachments {
     core: AppCore,
     ids: Mutex<HashMap<u64, (String, u64)>>,
-    remote: Mutex<HashMap<u64, Arc<dyn Fn() + Send + Sync>>>,
-    resyncing: Mutex<HashMap<u64, Box<dyn TerminalSubscription>>>,
+    cancellations: Mutex<HashMap<u64, Arc<dyn Fn() + Send + Sync>>>,
 }
 impl Attachments {
-    fn retain_resync(&self, id: u64, frames: Box<dyn TerminalSubscription>) {
-        let ids = self.ids.lock().unwrap();
-        if ids.contains_key(&id) {
-            self.resyncing.lock().unwrap().insert(id, frames);
-        }
-    }
     fn remove(&self, id: u64) {
-        if let Some(cancel) = self.remote.lock().unwrap().remove(&id) {
+        if let Some(cancel) = self.cancellations.lock().unwrap().remove(&id) {
             cancel();
         }
         if let Some((session, subscriber)) = self.ids.lock().unwrap().remove(&id) {
             self.core.sessions.detach_terminal(&session, subscriber);
         }
-        self.resyncing.lock().unwrap().remove(&id);
     }
 }
 impl Drop for Attachments {
     fn drop(&mut self) {
-        for (_, cancel) in self.remote.get_mut().unwrap().drain() {
+        for (_, cancel) in self.cancellations.get_mut().unwrap().drain() {
             cancel();
         }
         for (_, (session, subscriber)) in self.ids.get_mut().unwrap().drain() {
             self.core.sessions.detach_terminal(&session, subscriber);
         }
-        self.resyncing.get_mut().unwrap().clear();
     }
 }
 
@@ -537,10 +517,7 @@ struct ConnectionWindows {
 
 impl ConnectionWindows {
     fn dispatch(&self, request: Request) -> Option<Response> {
-        if matches!(
-            request,
-            Request::terminal_observe_input { .. } | Request::terminal_take_back { .. }
-        ) {
+        if matches!(request, Request::terminal_observe_input { .. }) {
             let _owners = self.owners.lock().unwrap();
             if self.closed.is_cancelled() {
                 return None;
@@ -554,49 +531,8 @@ impl ConnectionWindows {
                             .map_err(|error| ClientError::msg(error.to_string())),
                     )
                 }
-                Request::terminal_take_back { ref session_id, .. } => {
-                    if let Err(error) = self.core.sessions.take_terminal_input_control(
-                        session_id,
-                        self.id,
-                        &self.core.db,
-                    ) {
-                        return Some(Response::terminal_take_back(Err(ClientError::msg(
-                            error.to_string(),
-                        ))));
-                    }
-                    super::dispatch(&self.core, request)
-                }
                 _ => unreachable!(),
             });
-        }
-        if let Request::remote_follow { computer, follow } = request {
-            return Some(Response::remote_follow(
-                super::block_on(async {
-                    tokio::select! {
-                        biased;
-                        _ = self.closed.cancelled() => { self.core.remote.owner_gone(self.id); Err("Remote overview client disconnected.".into()) }
-                        result = self.core.remote.follow(computer, self.id, follow) => result,
-                    }
-                }).map_err(ClientError::msg),
-            ));
-        }
-        if let Request::remote_enroll_start {
-            origin,
-            confirm_account,
-        } = request
-        {
-            let result = super::block_on(async {
-                tokio::select! {
-                    biased;
-                    _ = self.closed.cancelled() => {
-                        self.core.remote.owner_gone(self.id);
-                        Err("Enrollment client disconnected.".into())
-                    }
-                    result = self.core.remote.start_owned(origin, confirm_account, Some(self.id)) => result,
-                }
-            })
-            .map_err(ClientError::msg);
-            return Some(Response::remote_enroll_start(result));
         }
         if let Request::node_mark_viewed {
             window_label,
@@ -702,7 +638,6 @@ impl ConnectionWindows {
     }
 
     fn remove(&self) {
-        self.core.remote.owner_gone(self.id);
         let mut owners = self.owners.lock().unwrap();
         self.core.sessions.clear_connection_compositions(self.id);
         owners.retain(|label, owner| {
@@ -820,8 +755,7 @@ async fn connection(
     let attachments = Arc::new(Attachments {
         core: core.clone(),
         ids: Mutex::default(),
-        remote: Mutex::default(),
-        resyncing: Mutex::default(),
+        cancellations: Mutex::default(),
     });
     let (control_tx, mut controls) = mpsc::channel::<Frame>(128);
     let (terminal_tx, mut terminals) = mpsc::channel::<Frame>(64);
@@ -861,39 +795,18 @@ async fn connection(
             };
             let mut apply = || -> Result<()> {
                 if frame.kind == wire::INPUT {
-                    if let Some((computer, target)) = runner_core::remote::terminal_target(&session)
-                    {
-                        super::block_on(input_core.remote.remote_input(
-                            computer.into(),
-                            target.into(),
-                            binary.0.into(),
-                        ))
-                        .map_err(anyhow::Error::msg)?;
-                    } else {
-                        input_core.sessions.desktop_input(&session, binary.0)?;
-                    }
+                    input_core.sessions.desktop_input(&session, binary.0)?;
                 } else {
                     let origin = binary.u64()?;
                     let cols = binary.u16()?;
                     let rows = binary.u16()?;
-                    if let Some((computer, target)) = runner_core::remote::terminal_target(&session)
-                    {
-                        super::block_on(input_core.remote.remote_resize(
-                            computer.into(),
-                            target.into(),
-                            cols,
-                            rows,
-                        ))
-                        .map_err(anyhow::Error::msg)?;
-                    } else {
-                        input_core.sessions.resize_terminal(
-                            &session,
-                            origin,
-                            cols,
-                            rows,
-                            &input_core.db,
-                        )?;
-                    }
+                    input_core.sessions.resize_terminal(
+                        &session,
+                        origin,
+                        cols,
+                        rows,
+                        &input_core.db,
+                    )?;
                 }
                 Ok(())
             };
@@ -970,31 +883,18 @@ async fn connection(
                         }
                         wire::ATTACH => {
                             let mut binary = Binary(&frame.payload); let id = binary.u64()?; let session = binary.string()?;
-                            let config: Option<runner_core::remote::RemoteTerminal> = if binary.0.is_empty() { None } else { Some(serde_json::from_slice(binary.0).map_err(|_| anyhow::anyhow!("Invalid remote terminal configuration"))?) };
-                            if config.as_ref().is_some_and(|c| c.address() != session) { anyhow::bail!("Remote terminal address does not match"); }
                             attachments.ids.lock().unwrap().insert(id, (session.clone(), 0));
                             let core = core.clone(); let tx = terminal_tx.clone(); let controls = control_tx.clone(); let attachments = attachments.clone(); let cancel = local.clone();
                             tokio::task::spawn_blocking(move || {
                                 if cancel.is_cancelled() { return; }
-                                let remote = config.is_some();
-                                let attached = match config {
-                                    Some(config) => super::block_on(core.remote.attach_remote(config)).map_err(crate::error::Error::msg),
-                                    None => core.sessions.attach_terminal(&session),
-                                };
-                                match attached {
+                                match core.sessions.attach_terminal(&session) {
                                     Ok(attachment) => {
                                         {
                                             let mut ids = attachments.ids.lock().unwrap();
-                                            if let Some(entry) = ids.get_mut(&id) { entry.1 = attachment.subscriber_id; attachments.remote.lock().unwrap().insert(id, attachment.frames.cancellation()); }
+                                            if let Some(entry) = ids.get_mut(&id) { entry.1 = attachment.subscriber_id; attachments.cancellations.lock().unwrap().insert(id, attachment.frames.cancellation()); }
                                             else { (attachment.frames.cancellation())(); core.sessions.detach_terminal(&session, attachment.subscriber_id); return; }
                                         }
-                                        if let Ok(Some(frames)) = forward_terminal(id, attachment, &tx, &cancel) {
-                                            if remote {
-                                                // Resync ownership lasts until the client replaces or detaches it.
-                                                attachments.retain_resync(id, frames);
-                                                return;
-                                            }
-                                        }
+                                        let _ = forward_terminal(id, attachment, &tx, &cancel);
                                         attachments.remove(id);
                                     }
                                     Err(error) => { attachments.remove(id); let mut frame = wire::numbered(wire::ATTACH_ERROR, id); frame.payload.extend_from_slice(error.to_string().as_bytes()); let _ = controls.blocking_send(frame); }
@@ -1037,7 +937,7 @@ fn forward_terminal(
     mut attachment: TerminalAttachment,
     tx: &mpsc::Sender<Frame>,
     cancel: &CancellationToken,
-) -> Result<Option<Box<dyn TerminalSubscription>>> {
+) -> Result<()> {
     tx.blocking_send(wire::snapshot_header(
         id,
         attachment.subscriber_id,
@@ -1075,14 +975,11 @@ fn forward_terminal(
         let resync = frame.kind == wire::RESYNC;
         let end = frame.kind == wire::TERMINAL_CLOSED;
         tx.blocking_send(frame)?;
-        if resync {
-            return Ok(Some(attachment.frames));
-        }
-        if end {
+        if resync || end {
             break;
         }
     }
-    Ok(None)
+    Ok(())
 }
 fn send_chunks(
     tx: &mpsc::Sender<Frame>,
@@ -1142,43 +1039,11 @@ pub(super) async fn os_shutdown(
 }
 
 #[cfg(test)]
-pub(crate) async fn remote_test_connection(
-    stream: crate::ipc::IpcStream,
-    core: AppCore,
-    id: u64,
-    cancel: CancellationToken,
-) -> Result<()> {
-    let windows = Arc::new(ConnectionWindows {
-        core: core.clone(),
-        owners: Arc::new(Mutex::default()),
-        id,
-        closed: CancellationToken::new(),
-    });
-    let (_tx, report) = tokio::sync::watch::channel(None);
-    connection(
-        stream,
-        core,
-        wire::Welcome {
-            exe_sha256: "remote-test".into(),
-            pid: 1,
-            started_at: "now".into(),
-            app_clients: 0,
-        },
-        Default::default(),
-        cancel,
-        true,
-        windows,
-        report,
-    )
-    .await
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn connection_cleanup_and_desktop_takeback_release_owned_compositions() {
+    fn connection_cleanup_releases_owned_compositions() {
         use runner_core::protocol::terminal::InputEvent;
         let root = tempfile::tempdir().unwrap();
         let core = crate::test_support::test_core_in(root.path().to_owned());
@@ -1223,157 +1088,7 @@ mod tests {
             "a queued request cannot recreate an orphan"
         );
         second.dispatch(compose()).unwrap();
-        let revision = model.input_reset_guard();
-        connection(3)
-            .dispatch(Request::terminal_take_back {
-                session_id: "preedit".into(),
-                cols: 80,
-                rows: 24,
-            })
-            .unwrap();
-        assert!(
-            model.input_reset_guard() > revision,
-            "another desktop client's takeback clears preedit"
-        );
         drop(model);
-        core.sessions.drain_terminal_workers();
-    }
-
-    #[tokio::test]
-    async fn desktop_transports_reject_stale_input_after_split_tab_takeover() {
-        use runner_core::protocol::terminal::TerminalController;
-        let root = tempfile::tempdir().unwrap();
-        let core = crate::test_support::test_core_in(root.path().to_owned());
-        let events: Arc<dyn crate::session::manager::SessionEvents> =
-            Arc::new(core.session_events());
-        for id in ["left", "right"] {
-            core.sessions
-                .prepare_unlisted_terminal(id, (80, 24), &core.db, &events)
-                .unwrap();
-        }
-        crate::repo::node::create_tab(
-            &core.db.get().unwrap(),
-            None,
-            "Split",
-            0,
-            &serde_json::json!({"slots": ["left", "right"]}).to_string(),
-        )
-        .unwrap();
-        let queued = [
-            core.sessions.record_terminal_input("left"),
-            core.sessions.record_terminal_input("right"),
-        ];
-        #[cfg(unix)]
-        let endpoint = IpcEndpoint(root.path().join("runnerd.sock"));
-        #[cfg(windows)]
-        let endpoint = IpcEndpoint(std::path::PathBuf::from(format!(
-            r"\\.\pipe\runner-input-control-test-{}",
-            root.path().file_name().unwrap().to_string_lossy()
-        )));
-        let mut listener = IpcListener::bind(&endpoint).unwrap();
-        let shutdown = CancellationToken::new();
-        let server_shutdown = shutdown.clone();
-        let server_core = core.clone();
-        let server = tokio::spawn(async move {
-            let stream = listener.accept().await.unwrap();
-            let windows = Arc::new(ConnectionWindows {
-                core: server_core.clone(),
-                owners: Arc::new(Mutex::default()),
-                id: 1,
-                closed: CancellationToken::new(),
-            });
-            let (_report, resume_report) = tokio::sync::watch::channel(None);
-            connection(
-                stream,
-                server_core,
-                wire::Welcome {
-                    exe_sha256: "hash".into(),
-                    pid: 1,
-                    started_at: "now".into(),
-                    app_clients: 0,
-                },
-                Default::default(),
-                server_shutdown,
-                true,
-                windows,
-                resume_report,
-            )
-            .await
-        });
-        let client_core = core.clone();
-        let client_shutdown = shutdown.clone();
-        tokio::task::spawn_blocking(move || {
-            let socket = runner_core::protocol::socket::SocketTransport::connect(
-                &endpoint,
-                wire::Hello {
-                    exe_sha256: "hash".into(),
-                    client: "test".into(),
-                },
-            )
-            .unwrap();
-            let local = super::super::InProcessTransport::client(client_core.clone());
-            let stale = [
-                local.attach("left").unwrap(),
-                local.attach("right").unwrap(),
-            ];
-            client_core
-                .sessions
-                .browser_resize("left", 1, "Remote", 100, 30, true, false, &client_core.db)
-                .unwrap();
-            let mut errors = client_core.events.subscribe();
-            for ((id, queued), stale) in ["left", "right"].into_iter().zip(&queued).zip(&stale) {
-                assert_eq!(stale.snapshot.controller, TerminalController::Desktop);
-                assert!(local.input(id, b"stale in-process").is_err());
-                socket.client().input(id, b"stale socket").unwrap();
-                super::super::block_on(async {
-                    tokio::time::timeout(Duration::from_secs(5), async {
-                        loop {
-                            let event = errors.recv().await.unwrap();
-                            if event.name == "session/input-error"
-                                && event.payload["session_id"] == id
-                            {
-                                break;
-                            }
-                        }
-                    })
-                    .await
-                    .unwrap();
-                });
-                assert!(queued.try_recv().is_err());
-                client_core
-                    .sessions
-                    .browser_input(id, 1, b"remote")
-                    .unwrap();
-                assert_eq!(
-                    queued.recv_timeout(Duration::from_secs(2)).unwrap(),
-                    b"remote"
-                );
-            }
-            client_core
-                .sessions
-                .take_back_terminal("left", 80, 24, &client_core.db)
-                .unwrap();
-            for (id, queued) in ["left", "right"].into_iter().zip(&queued) {
-                local.input(id, b"local in-process").unwrap();
-                assert_eq!(
-                    queued.recv_timeout(Duration::from_secs(2)).unwrap(),
-                    b"local in-process"
-                );
-                socket.client().input(id, b"local socket").unwrap();
-                assert_eq!(
-                    queued.recv_timeout(Duration::from_secs(2)).unwrap(),
-                    b"local socket"
-                );
-            }
-            client_shutdown.cancel();
-        })
-        .await
-        .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), server)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
         core.sessions.drain_terminal_workers();
     }
 
@@ -1536,22 +1251,6 @@ mod tests {
             .unwrap()
             .unwrap();
         let stopped = if let Ok(client) = &connected {
-            let remote = client.client();
-            tokio::task::spawn_blocking(move || {
-                assert_eq!(remote.remote_trust().unwrap(), Default::default());
-                let trust = remote
-                    .remote_set_pin(runner_core::remote::Secret("001234".into()))
-                    .unwrap();
-                assert!(trust.pin_set);
-                assert!(trust.fingerprint.is_some());
-                assert!(trust.devices.is_empty());
-            })
-            .await
-            .unwrap();
-            assert!(!root.path().join("remote.json").exists());
-            assert!(!root.path().join("remote-trust.json").exists());
-            assert!(!root.path().join("remote-identity.json").exists());
-            assert!(!root.path().join("remote-secrets.json").exists());
             client.shutdown(true).unwrap();
             Some(tokio::time::timeout(SHUTDOWN_TIMEOUT * 2, server).await)
         } else {
@@ -1620,33 +1319,6 @@ mod tests {
             .await
             .expect("a sentinel accept error must return to the serve loop");
             assert!(started.elapsed() >= Duration::from_millis(100));
-        }
-    }
-
-    #[tokio::test]
-    async fn queued_remote_start_cannot_outlive_its_disconnected_client() {
-        let core = crate::test_support::test_core();
-        let windows = ConnectionWindows {
-            core,
-            owners: Arc::new(Mutex::default()),
-            id: 1,
-            closed: CancellationToken::new(),
-        };
-        windows.closed.cancel();
-        let response = tokio::task::spawn_blocking(move || {
-            windows.dispatch(Request::remote_enroll_start {
-                origin: None,
-                confirm_account: true,
-            })
-        })
-        .await
-        .unwrap()
-        .unwrap();
-        match response {
-            Response::remote_enroll_start(Err(error)) => {
-                assert_eq!(error.message, "Enrollment client disconnected.");
-            }
-            response => panic!("unexpected response: {response:?}"),
         }
     }
 

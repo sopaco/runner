@@ -376,73 +376,55 @@ fn observed_draft_cap_releases_readiness_and_reservation_only_while_idle() {
 }
 
 #[test]
-fn connection_compositions_clear_on_disconnect_and_terminal_handover() {
+fn connection_compositions_clear_on_disconnect() {
     use runner_core::protocol::terminal::InputEvent;
-    for browser in [false, true] {
-        let temp = tempfile::tempdir().unwrap();
-        let mut core = crate::test_support::test_core_in(temp.path().to_owned());
-        core.sessions = mgr_with_fake(None, fake_runtime());
-        let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
-        let id = "orphaned-composition";
-        core.sessions
-            .prepare_unlisted_terminal(id, (80, 24), &core.db, &events)
-            .unwrap();
-        install_test_session_handle(&core.sessions, id);
-        let capture = Arc::new(DeliveryEventCapture::default());
-        let listener: Arc<dyn router::SessionDeliveryListener> = capture.clone();
-        core.sessions
-            .register_delivery_listener(id, Arc::downgrade(&listener));
-        core.sessions
-            .observe_terminal_input(id, 1, InputEvent::Composing { composing: true })
-            .unwrap();
-        assert_eq!(
-            core.sessions.delivery_readiness(id),
-            router::DeliveryReadiness::Drafting
-        );
-        core.sessions.clear_connection_compositions(2);
-        assert_eq!(
-            core.sessions.delivery_readiness(id),
-            router::DeliveryReadiness::Drafting
-        );
-        if browser {
-            core.sessions
-                .browser_resize(id, 1, "Browser", 80, 24, true, false, &core.db)
-                .unwrap();
-        } else {
-            core.sessions.clear_connection_compositions(1);
-        }
-        assert!(capture
-            .0
-            .lock()
-            .unwrap()
-            .contains(&router::SessionDeliveryEvent::InputCleared));
-        assert!(!matches!(
-            core.sessions.delivery_readiness(id),
-            router::DeliveryReadiness::Drafting
-        ));
-        core.sessions
-            .take_back_terminal(id, 80, 24, &core.db)
-            .unwrap();
-        core.sessions
-            .observe_terminal_input(id, 2, InputEvent::Composing { composing: true })
-            .unwrap();
-        core.sessions
-            .observe_terminal_input(id, 1, InputEvent::Composing { composing: false })
-            .unwrap();
-        assert_eq!(
-            core.sessions.delivery_readiness(id),
-            router::DeliveryReadiness::Drafting,
-            "a stale clear cannot cancel another client's preedit"
-        );
-        core.sessions
-            .take_terminal_input_control(id, 3, &core.db)
-            .unwrap();
-        assert!(!matches!(
-            core.sessions.delivery_readiness(id),
-            router::DeliveryReadiness::Drafting
-        ));
-        core.sessions.drain_terminal_workers();
-    }
+    let temp = tempfile::tempdir().unwrap();
+    let mut core = crate::test_support::test_core_in(temp.path().to_owned());
+    core.sessions = mgr_with_fake(None, fake_runtime());
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    let id = "orphaned-composition";
+    core.sessions
+        .prepare_unlisted_terminal(id, (80, 24), &core.db, &events)
+        .unwrap();
+    install_test_session_handle(&core.sessions, id);
+    let capture = Arc::new(DeliveryEventCapture::default());
+    let listener: Arc<dyn router::SessionDeliveryListener> = capture.clone();
+    core.sessions
+        .register_delivery_listener(id, Arc::downgrade(&listener));
+    core.sessions
+        .observe_terminal_input(id, 1, InputEvent::Composing { composing: true })
+        .unwrap();
+    assert_eq!(
+        core.sessions.delivery_readiness(id),
+        router::DeliveryReadiness::Drafting
+    );
+    core.sessions.clear_connection_compositions(2);
+    assert_eq!(
+        core.sessions.delivery_readiness(id),
+        router::DeliveryReadiness::Drafting
+    );
+    core.sessions.clear_connection_compositions(1);
+    assert!(capture
+        .0
+        .lock()
+        .unwrap()
+        .contains(&router::SessionDeliveryEvent::InputCleared));
+    assert!(!matches!(
+        core.sessions.delivery_readiness(id),
+        router::DeliveryReadiness::Drafting
+    ));
+    core.sessions
+        .observe_terminal_input(id, 2, InputEvent::Composing { composing: true })
+        .unwrap();
+    core.sessions
+        .observe_terminal_input(id, 1, InputEvent::Composing { composing: false })
+        .unwrap();
+    assert_eq!(
+        core.sessions.delivery_readiness(id),
+        router::DeliveryReadiness::Drafting,
+        "a stale clear cannot cancel another client's preedit"
+    );
+    core.sessions.drain_terminal_workers();
 }
 
 #[test]

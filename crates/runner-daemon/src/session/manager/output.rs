@@ -837,52 +837,29 @@ impl SessionManager {
     /// the spawn-time grid regardless of how big the visible grid
     /// is.
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16, pool: &Arc<DbPool>) -> Result<()> {
-        let _control = self.terminal_control.lock().unwrap();
-        self.resize_controlled(
-            session_id,
-            cols,
-            rows,
-            pool,
-            terminal::ResizeControl::Desktop,
-        )
-    }
-    pub(super) fn resize_controlled(
-        &self,
-        session_id: &str,
-        cols: u16,
-        rows: u16,
-        pool: &Arc<DbPool>,
-        control: terminal::ResizeControl,
-    ) -> Result<()> {
         let state = self.session_state_or_insert(session_id);
         let settle_ms = self
             .resize_settle_ms
             .load(std::sync::atomic::Ordering::Relaxed);
         let (settle_generation, resize_result) = {
             let mut session = state.lock().unwrap();
-            let previous_controller = session.controller.clone();
             let previous_size = session
                 .terminal
                 .as_ref()
                 .map(|model| model.size())
                 .or(session.last_requested_size);
-            let applied = control.apply(&mut session.controller);
             let size_changed = previous_size != Some((cols, rows));
-            let controller_changed = session.controller != previous_controller;
             log::debug!(
                 "resize request: session={session_id} {} -> {cols}x{rows} \
-                 size_changed={size_changed} controller={:?} -> {:?} applied={applied}",
+                 size_changed={size_changed}",
                 previous_size.map_or_else(|| "none".into(), |(c, r)| format!("{c}x{r}")),
-                previous_controller.wire(),
-                session.controller.wire(),
             );
             // ConPTY repaints on any resize, and agents reprint their whole
             // history when it does, so a request that changes nothing must not
             // reach the runtime or the attached mirrors.
-            if !applied || !(size_changed || controller_changed) {
+            if !size_changed {
                 return Ok(());
             }
-            let controller = session.controller.wire();
             if let Some(model) = &session.terminal {
                 model.resize(cols, rows);
             }
@@ -894,7 +871,7 @@ impl SessionManager {
                     seq,
                     cols,
                     rows,
-                    controller,
+                    controller: Default::default(),
                 },
             );
             session.last_requested_size = Some((cols, rows));

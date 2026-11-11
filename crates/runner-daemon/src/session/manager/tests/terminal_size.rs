@@ -843,9 +843,6 @@ fn unchanged_resize_reaches_neither_the_runtime_nor_the_mirrors() {
     core.sessions.resize(id, 80, 24, &core.db).unwrap();
     core.sessions.resize(id, 100, 30, &core.db).unwrap();
     core.sessions.resize(id, 100, 30, &core.db).unwrap();
-    core.sessions
-        .take_back_terminal(id, 100, 30, &core.db)
-        .unwrap();
 
     assert_eq!(
         resized_frames_until_output(&core, id, &mut attachment),
@@ -856,46 +853,4 @@ fn unchanged_resize_reaches_neither_the_runtime_nor_the_mirrors() {
         vec![(id.to_owned(), 100, 30)]
     );
     assert_eq!(core.sessions.terminal_model(id).unwrap().size(), (100, 30));
-}
-
-#[test]
-fn alternating_remote_takes_resize_only_on_a_real_change() {
-    let temp = tempfile::tempdir().unwrap();
-    let id = "alternating-takes";
-    let (core, fake, mut attachment) = resize_terminal_fixture(&temp, id);
-    let request = |channel: u64, (cols, rows): (u16, u16), take: bool, viewport: bool| {
-        let name = if channel == 1 { "First" } else { "Second" };
-        core.sessions
-            .browser_resize(id, channel, name, cols, rows, take, viewport, &core.db)
-            .unwrap();
-    };
-
-    request(1, (100, 30), true, false);
-    request(1, (100, 30), true, false);
-    request(1, (100, 30), false, true);
-    request(2, (120, 40), true, false);
-    request(1, (90, 30), false, true);
-    request(2, (120, 40), true, false);
-    request(2, (120, 40), false, true);
-    request(1, (100, 30), true, false);
-    request(2, (100, 30), true, false);
-
-    let expected = vec![(100, 30), (120, 40), (100, 30), (100, 30)];
-    assert_eq!(
-        resized_frames_until_output(&core, id, &mut attachment),
-        expected
-    );
-    assert_eq!(
-        fake.resizes
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(_, cols, rows)| (*cols, *rows))
-            .collect::<Vec<_>>(),
-        expected
-    );
-    assert_eq!(
-        core.sessions.browser_controller(id, 2),
-        runner_core::companion::Controller::You
-    );
 }

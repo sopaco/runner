@@ -312,100 +312,6 @@ struct ParserState {
     processor: crate::snapshot::TrackedProcessor,
     flush_scheduled: bool,
     boundary: crate::snapshot::BoundaryScanner,
-    burst: BurstHold,
-}
-
-/// A remote mirror receives an agent's full-history reprint, sent when its
-/// terminal is resized, as many relay chunks. Painting each chunk scrolls the
-/// view through the whole history, so a clear-scrollback or a large volume
-/// holds parsing until the stream is briefly quiet, and never past the cap.
-/// Typing echo is far below the volume threshold and is parsed at once. An
-/// explicit synchronized update stays with vte: the chunk that opens one, and
-/// every chunk while one is open, releases anything held and is parsed at once.
-const BURST_WINDOW: Duration = Duration::from_millis(100);
-const BURST_BYTES: usize = 32 * 1024;
-const BURST_QUIET: Duration = Duration::from_millis(80);
-const BURST_CAP: Duration = Duration::from_millis(500);
-const BURST_MAX_HELD: usize = 2 * 1024 * 1024;
-const CLEAR_SCROLLBACK: &[u8] = b"\x1b[3J";
-const BEGIN_SYNC: &[u8] = b"\x1b[?2026h";
-
-#[derive(Default)]
-struct BurstHold {
-    window: Option<(Instant, usize)>,
-    held: Vec<u8>,
-    holding: Option<(Instant, Instant)>,
-    // The stream's last bytes, so a marker split across chunks is still seen.
-    tail: Vec<u8>,
-}
-
-#[derive(Debug, PartialEq)]
-enum Burst {
-    Pass,
-    Held,
-    Release(Vec<u8>),
-}
-
-impl BurstHold {
-    fn feed(&mut self, bytes: &[u8], now: Instant, synchronized: bool) -> Burst {
-        let begins_sync = self.contains(bytes, BEGIN_SYNC);
-        let clears = self.contains(bytes, CLEAR_SCROLLBACK);
-        self.tail.extend_from_slice(bytes);
-        let excess = self.tail.len().saturating_sub(BEGIN_SYNC.len() - 1);
-        self.tail.drain(..excess);
-        if synchronized || begins_sync {
-            if self.holding.is_none() {
-                self.window = None;
-                return Burst::Pass;
-            }
-            self.held.extend_from_slice(bytes);
-            return Burst::Release(self.take());
-        }
-        let started = match self.holding {
-            Some((started, _)) => started,
-            None => {
-                let total = match self.window {
-                    Some((start, total)) if now.duration_since(start) <= BURST_WINDOW => {
-                        self.window = Some((start, total + bytes.len()));
-                        total + bytes.len()
-                    }
-                    _ => {
-                        self.window = Some((now, bytes.len()));
-                        bytes.len()
-                    }
-                };
-                if total < BURST_BYTES && !clears {
-                    return Burst::Pass;
-                }
-                now
-            }
-        };
-        self.held.extend_from_slice(bytes);
-        self.holding = Some((started, now));
-        if self.held.len() >= BURST_MAX_HELD || now >= started + BURST_CAP {
-            return Burst::Release(self.take());
-        }
-        Burst::Held
-    }
-
-    fn contains(&self, bytes: &[u8], marker: &[u8]) -> bool {
-        let tail = &self.tail[self.tail.len().saturating_sub(marker.len() - 1)..];
-        let mut edge = tail.to_vec();
-        edge.extend_from_slice(&bytes[..bytes.len().min(marker.len() - 1)]);
-        edge.windows(marker.len()).any(|window| window == marker)
-            || bytes.windows(marker.len()).any(|window| window == marker)
-    }
-
-    fn deadline(&self) -> Option<Instant> {
-        self.holding
-            .map(|(started, last)| (last + BURST_QUIET).min(started + BURST_CAP))
-    }
-
-    fn take(&mut self) -> Vec<u8> {
-        self.window = None;
-        self.holding = None;
-        std::mem::take(&mut self.held)
-    }
 }
 
 #[derive(Default)]
@@ -478,7 +384,6 @@ pub struct TerminalMirror {
     frame_worker: Mutex<Option<FrameWorker>>,
     link_cwd: std::sync::OnceLock<Option<PathBuf>>,
     config: Mutex<Config>,
-    coalesce_bursts: bool,
     /// Written only while the term is locked, so a reader holding the term
     /// lock sees the mark that matches the grid.
     scroll_mark: Mutex<find::ScrollMark>,
@@ -488,14 +393,10 @@ pub struct TerminalMirror {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TerminalControl {
     pub controller: TerminalController,
-    pub last_remote_name: Option<String>,
 }
 
 impl TerminalControl {
     fn apply(&mut self, controller: TerminalController) {
-        if let TerminalController::Browser { name, .. } = &controller {
-            self.last_remote_name = Some(name.clone());
-        }
         self.controller = controller;
     }
 
@@ -604,10 +505,6 @@ impl TerminalMirror {
                             let mut sequence = mirror.sequence.lock().unwrap();
                             if seq > sequence.last {
                                 sequence.last = seq;
-                                mirror.release_burst(
-                                    &mut sequence,
-                                    &mut mirror.parser.lock().unwrap(),
-                                );
                                 mirror.resize_local(cols, rows);
                                 let changed = mirror.apply_controller(controller);
                                 if changed {
@@ -660,24 +557,6 @@ impl TerminalMirror {
         session_id: String,
         waker: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Arc<Self>> {
-        Self::connect(client, session_id, waker, false)
-    }
-
-    /// A mirror of another computer's terminal, which paints output bursts once.
-    pub fn attach_remote(
-        client: DaemonClient,
-        session_id: String,
-        waker: Arc<dyn Fn() + Send + Sync>,
-    ) -> Result<Arc<Self>> {
-        Self::connect(client, session_id, waker, true)
-    }
-
-    fn connect(
-        client: DaemonClient,
-        session_id: String,
-        waker: Arc<dyn Fn() + Send + Sync>,
-        coalesce_bursts: bool,
-    ) -> Result<Arc<Self>> {
         let attachment = client.attach(&session_id)?;
         let (events, discarded) = mpsc::channel();
         drop(discarded);
@@ -720,7 +599,6 @@ impl TerminalMirror {
             frame_worker: Mutex::default(),
             link_cwd: std::sync::OnceLock::new(),
             config: Mutex::new(term_config()),
-            coalesce_bursts,
             scroll_mark: Mutex::default(),
             viewport_holds: Arc::default(),
         });
@@ -859,7 +737,8 @@ impl TerminalMirror {
             last_output_at: sequence.last_output_at,
         }
     }
-    /// Returns whether the bytes reached the terminal; a held burst has not.
+    /// Returns whether the bytes reached the terminal; a chunk already at or
+    /// behind the last painted sequence has not.
     fn feed_output(&self, seq: u64, bytes: &[u8]) -> bool {
         let mut sequence = self.sequence.lock().unwrap();
         if seq <= sequence.last {
@@ -872,25 +751,6 @@ impl TerminalMirror {
             sequence.tui_ready_seq = sequence.tui_ready_seq.max(seq);
         }
         let mut parser = self.parser.lock().unwrap();
-        let released;
-        let bytes = if self.coalesce_bursts {
-            let synchronized = parser.processor.sync_timeout().sync_timeout().is_some();
-            match parser.burst.feed(bytes, now, synchronized) {
-                Burst::Pass => bytes,
-                Burst::Held => {
-                    if !std::mem::replace(&mut parser.flush_scheduled, true) {
-                        let _ = self.sync_flush.send(());
-                    }
-                    return false;
-                }
-                Burst::Release(held) => {
-                    released = held;
-                    &released
-                }
-            }
-        } else {
-            bytes
-        };
         let mut term = self.term.lock();
         let previous = *term.mode();
         self.track_scroll(&mut term, |tracker| parse_with(&mut parser, tracker, bytes));
@@ -902,27 +762,11 @@ impl TerminalMirror {
         }
         true
     }
-    fn release_burst(&self, sequence: &mut SequenceState, parser: &mut ParserState) -> bool {
-        if parser.burst.deadline().is_none() {
-            return false;
-        }
-        let held = parser.burst.take();
-        let mut term = self.term.lock();
-        let previous = *term.mode();
-        self.track_scroll(&mut term, |tracker| parse_with(parser, tracker, &held));
-        let seq = sequence.last;
-        mark_paint(sequence, &mut term, previous, seq);
-        true
-    }
     fn flush_held_output(&self) -> Option<Instant> {
         let mut sequence = self.sequence.lock().unwrap();
         let mut parser = self.parser.lock().unwrap();
         let now = Instant::now();
-        let mut flushed = parser
-            .burst
-            .deadline()
-            .is_some_and(|deadline| deadline <= now)
-            && self.release_burst(&mut sequence, &mut parser);
+        let mut flushed = false;
         if parser
             .processor
             .sync_timeout()
@@ -937,13 +781,7 @@ impl TerminalMirror {
             mark_paint(&mut sequence, &mut term, previous, seq);
             flushed = true;
         }
-        let next = [
-            parser.burst.deadline(),
-            parser.processor.sync_timeout().sync_timeout(),
-        ]
-        .into_iter()
-        .flatten()
-        .min();
+        let next = parser.processor.sync_timeout().sync_timeout();
         if next.is_none() {
             parser.flush_scheduled = false;
         }
@@ -1145,14 +983,7 @@ impl TerminalMirror {
         self.control.lock().unwrap().clone()
     }
 
-    pub fn take_back(&self, cols: u16, rows: u16) -> std::result::Result<(), ClientError> {
-        self.client.terminal_take_back(&self.session_id, cols, rows)
-    }
-
     pub fn resize(&self, cols: u16, rows: u16) {
-        if !self.control().desktop() {
-            return;
-        }
         let (cols, rows) = (cols.max(2), rows.max(2));
         if self.size() == (cols, rows) {
             return;
@@ -2322,128 +2153,6 @@ mod tests {
         frames.thread.join().unwrap();
     }
 
-    #[test]
-    fn burst_hold_passes_echo_and_holds_clears_and_volume_until_quiet_or_cap() {
-        let start = Instant::now();
-        let at = |ms: u64| start + Duration::from_millis(ms);
-        let mut hold = BurstHold::default();
-        assert_eq!(hold.feed(b"a", at(0), false), Burst::Pass);
-        assert_eq!(hold.deadline(), None);
-
-        assert_eq!(hold.feed(b"\x1b[2J\x1b[3J", at(10), false), Burst::Held);
-        assert_eq!(hold.feed(b"history", at(50), false), Burst::Held);
-        assert_eq!(hold.deadline(), Some(at(130)));
-        assert_eq!(hold.take(), b"\x1b[2J\x1b[3Jhistory");
-        assert_eq!(hold.deadline(), None);
-
-        let streaming = vec![b'x'; 16 * 1024];
-        assert_eq!(hold.feed(&streaming, at(200), false), Burst::Pass);
-        assert_eq!(
-            hold.feed(&streaming[..15 * 1024], at(250), false),
-            Burst::Pass
-        );
-        assert_eq!(
-            hold.feed(&streaming[..2 * 1024], at(280), false),
-            Burst::Held
-        );
-        assert_eq!(hold.deadline(), Some(at(360)));
-        assert_eq!(hold.take().len(), 2 * 1024);
-        assert_eq!(hold.feed(&streaming, at(1000), false), Burst::Pass);
-        assert_eq!(
-            hold.feed(&streaming, at(1150), false),
-            Burst::Pass,
-            "a new window starts after a quiet gap"
-        );
-
-        assert_eq!(hold.feed(b"\x1b[3J", at(2000), false), Burst::Held);
-        for ms in (2060..2500).step_by(60) {
-            assert_eq!(hold.feed(b"more", at(ms), false), Burst::Held);
-        }
-        assert_eq!(hold.deadline(), Some(at(2500)));
-        let Burst::Release(released) = hold.feed(b"last", at(2500), false) else {
-            panic!("a continuous burst is released at the cap");
-        };
-        assert!(released.starts_with(b"\x1b[3J") && released.ends_with(b"last"));
-        assert_eq!(hold.deadline(), None);
-
-        assert!(matches!(
-            hold.feed(&vec![b'x'; BURST_MAX_HELD], at(3000), false),
-            Burst::Release(bytes) if bytes.len() == BURST_MAX_HELD
-        ));
-    }
-
-    fn compositions(marker: &[u8]) -> Vec<Vec<&[u8]>> {
-        (0..1u32 << (marker.len() - 1))
-            .map(|cuts| {
-                let mut parts = Vec::new();
-                let mut start = 0;
-                for end in 1..=marker.len() {
-                    if end == marker.len() || cuts & (1 << (end - 1)) != 0 {
-                        parts.push(&marker[start..end]);
-                        start = end;
-                    }
-                }
-                parts
-            })
-            .collect()
-    }
-
-    #[test]
-    fn burst_hold_finds_a_clear_split_anywhere_across_chunks() {
-        let now = Instant::now();
-        for parts in compositions(CLEAR_SCROLLBACK) {
-            let mut hold = BurstHold::default();
-            assert_eq!(hold.feed(b"before\x1b[H", now, false), Burst::Pass);
-            let (last, leading) = parts.split_last().unwrap();
-            for part in leading {
-                assert_eq!(hold.feed(part, now, false), Burst::Pass, "{parts:?}");
-            }
-            let mut completing = last.to_vec();
-            completing.extend_from_slice(b"short repaint");
-            assert_eq!(hold.feed(&completing, now, false), Burst::Held, "{parts:?}");
-            assert_eq!(hold.feed(b"more repaint", now, false), Burst::Held);
-            hold.take();
-            assert_eq!(
-                hold.feed(b"echo", now, false),
-                Burst::Pass,
-                "a marker already seen is not found again"
-            );
-        }
-    }
-
-    #[test]
-    fn burst_hold_yields_to_an_explicit_synchronized_update() {
-        let now = Instant::now();
-        let volume = vec![b'x'; 2 * BURST_BYTES];
-        let mut hold = BurstHold::default();
-        assert_eq!(hold.feed(&volume, now, true), Burst::Pass);
-        assert_eq!(hold.feed(CLEAR_SCROLLBACK, now, true), Burst::Pass);
-        assert_eq!(hold.feed(b"echo", now, false), Burst::Pass);
-
-        for parts in compositions(BEGIN_SYNC) {
-            let mut hold = BurstHold::default();
-            assert_eq!(hold.feed(CLEAR_SCROLLBACK, now, false), Burst::Held);
-            let (last, leading) = parts.split_last().unwrap();
-            for part in leading {
-                assert_eq!(hold.feed(part, now, false), Burst::Held, "{parts:?}");
-            }
-            let mut expected = CLEAR_SCROLLBACK.to_vec();
-            expected.extend_from_slice(BEGIN_SYNC);
-            assert_eq!(
-                hold.feed(last, now, false),
-                Burst::Release(expected),
-                "{parts:?}"
-            );
-            assert_eq!(hold.deadline(), None);
-        }
-
-        let mut hold = BurstHold::default();
-        let mut opening = BEGIN_SYNC.to_vec();
-        opening.extend_from_slice(CLEAR_SCROLLBACK);
-        opening.extend_from_slice(&volume);
-        assert_eq!(hold.feed(&opening, now, false), Burst::Pass);
-    }
-
     type ScriptedFrame = std::result::Result<TerminalFrame, ClientError>;
 
     struct ScriptedFrames(mpsc::Receiver<ScriptedFrame>, mpsc::Sender<ScriptedFrame>);
@@ -2493,9 +2202,7 @@ mod tests {
         }
     }
 
-    fn scripted_mirror(
-        remote: bool,
-    ) -> (
+    fn scripted_mirror() -> (
         Arc<TerminalMirror>,
         mpsc::Sender<ScriptedFrame>,
         Arc<AtomicUsize>,
@@ -2511,12 +2218,7 @@ mod tests {
             counter.fetch_add(1, Ordering::SeqCst);
         });
         let client = DaemonClient::new(host);
-        let mirror = if remote {
-            TerminalMirror::attach_remote(client, "burst".into(), waker)
-        } else {
-            TerminalMirror::attach(client, "burst".into(), waker)
-        }
-        .unwrap();
+        let mirror = TerminalMirror::attach(client, "burst".into(), waker).unwrap();
         (mirror, tx, wakes)
     }
 
@@ -2551,149 +2253,16 @@ mod tests {
     }
 
     #[test]
-    fn remote_mirror_paints_echo_at_once_and_a_full_repaint_in_one_wake() {
-        let (mirror, frames, wakes) = scripted_mirror(true);
-        let _view = mirror.view();
-        send_output(&frames, 1, b"typed");
-        assert!(wait_for(Duration::from_secs(2), || mirror
-            .output_activity()
-            .last_seq
-            == 1));
-        assert!(screen_text(&mirror).contains("typed"));
-        assert!(wait_for(Duration::from_secs(2), || wakes
-            .load(Ordering::SeqCst)
-            == 1));
-
-        let mut repaint = b"\x1b[H\x1b[2J\x1b[3J".to_vec();
-        for line in 0..3000 {
-            repaint.extend_from_slice(format!("history line {line}\r\n").as_bytes());
-        }
-        repaint.extend_from_slice(b"repaint done");
-        let chunks = repaint.chunks(8 * 1024).collect::<Vec<_>>();
-        assert!(chunks.len() > 4);
-        for (index, chunk) in chunks.iter().enumerate() {
-            send_output(&frames, index as u64 + 2, chunk);
-        }
-        assert!(wait_for(Duration::from_secs(2), || screen_text(&mirror)
-            .contains("repaint done")));
-        assert!(!screen_text(&mirror).contains("typed"));
-        thread::sleep(BURST_QUIET * 2);
-        assert_eq!(
-            wakes.load(Ordering::SeqCst),
-            2,
-            "every held chunk is painted by a single release"
-        );
-        assert_eq!(mirror.sync_state(), (None, 0, false));
-    }
-
-    fn filler(bytes: usize) -> Vec<u8> {
-        let mut filler = Vec::new();
-        while filler.len() < bytes {
-            filler.extend_from_slice(b"\x1b[1;1H");
-            filler.extend_from_slice(&[b'f'; 60]);
-        }
-        filler
-    }
-
-    #[test]
-    fn remote_mirror_keeps_explicit_synchronized_updates_with_vte() {
-        let (mirror, frames, _) = scripted_mirror(true);
-        let parsed = |seq: u64| {
-            assert!(wait_for(Duration::from_secs(2), || mirror
-                .output_activity()
-                .last_seq
-                == seq));
-            screen_text(&mirror)
-        };
-
-        send_output(&frames, 1, b"\x1b[?2026h\x1b[3;1Hprefix-a");
-        send_output(&frames, 2, &filler(2 * BURST_BYTES));
-        send_output(&frames, 3, b"\x1b[4;1Hafter-a\x1b[?2026l");
-        let screen = parsed(3);
-        assert!(
-            screen.contains("prefix-a") && screen.contains("after-a"),
-            "an update that ends after the volume threshold paints at its end marker"
-        );
-
-        let mut whole = b"\x1b[?2026h\x1b[3J".to_vec();
-        whole.extend_from_slice(&filler(2 * BURST_BYTES));
-        whole.extend_from_slice(b"\x1b[5;1Hwhole-b\x1b[?2026l");
-        send_output(&frames, 4, &whole);
-        assert!(parsed(4).contains("whole-b"));
-        assert_eq!(mirror.sync_state().0, None);
-
-        send_output(&frames, 5, b"\x1b[?2026h\x1b[6;1Hpartial-c");
-        let mut unfinished = filler(2 * BURST_BYTES);
-        unfinished.extend_from_slice(b"\x1b[7;1Htail-c");
-        send_output(&frames, 6, &unfinished);
-        assert!(wait_for(Duration::from_secs(2), || screen_text(&mirror)
-            .contains("partial-c")));
-        assert!(
-            screen_text(&mirror).contains("tail-c"),
-            "vte's own timeout flushes everything that arrived inside the update"
-        );
-        assert!(wait_for(Duration::from_secs(2), || mirror.sync_state()
-            == (None, 0, false)));
-    }
-
-    #[test]
-    fn remote_mirror_releases_a_continuous_burst_at_the_cap() {
-        let (mirror, frames, _) = scripted_mirror(true);
-        send_output(&frames, 1, b"\x1b[3Jtick 1");
-        let started = Instant::now();
-        let mut seq = 1;
-        while !screen_text(&mirror).contains("tick") {
-            assert!(
-                started.elapsed() < BURST_CAP * 3,
-                "a burst that never goes quiet is still painted"
-            );
-            thread::sleep(BURST_QUIET / 2);
-            seq += 1;
-            send_output(&frames, seq, format!("\r\ntick {seq}").as_bytes());
-        }
-    }
-
-    #[test]
-    fn a_released_burst_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
-        let (mirror, frames, _) = scripted_mirror(true);
-        let _view = mirror.view();
-        let lines = |range: std::ops::Range<usize>| {
-            range
-                .map(|line| format!("line {line:05} of the output\r\n"))
-                .collect::<String>()
-                .into_bytes()
-        };
-        send_output(&frames, 1, &lines(0..30));
-        assert!(wait_for(Duration::from_secs(2), || mirror
-            .output_activity()
-            .last_seq
-            == 1));
-        let mark = mirror.scroll_mark();
-        let hold = mirror.hold_viewport();
-        let burst = lines(30..6030);
-        let chunks = burst.chunks(8 * 1024).collect::<Vec<_>>();
-        assert!(burst.len() > 2 * BURST_BYTES);
-        for (index, chunk) in chunks.iter().enumerate() {
-            send_output(&frames, index as u64 + 2, chunk);
-        }
-        assert!(wait_for(Duration::from_secs(2), || mark
-            .moved_since(mirror.scroll_mark())
-            == Some(6000)));
-        assert_eq!(mirror.scroll_state().display_offset, 6000);
-        drop(hold);
-    }
-
-    #[test]
     fn local_mirror_parses_a_clear_scrollback_at_once() {
-        let (mirror, frames, _) = scripted_mirror(false);
+        let (mirror, frames, _) = scripted_mirror();
         send_output(&frames, 1, b"\x1b[3Jlocal output");
         assert!(wait_for(Duration::from_secs(2), || mirror
             .output_activity()
             .last_seq
             == 1));
         assert!(screen_text(&mirror).contains("local output"));
-        let (mirror, frames, _) = scripted_mirror(false);
-        let volume = vec![b'x'; 4 * BURST_BYTES];
+        let (mirror, frames, _) = scripted_mirror();
+        let volume = vec![b'x'; 4 * 32 * 1024];
         send_output(&frames, 1, &volume);
         assert!(wait_for(Duration::from_secs(2), || mirror
             .output_activity()

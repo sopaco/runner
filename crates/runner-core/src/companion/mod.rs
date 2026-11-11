@@ -3,7 +3,6 @@ use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 
 mod actions;
-pub mod channel;
 mod messages;
 mod overview;
 mod status;

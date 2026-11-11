@@ -97,7 +97,6 @@ pub fn boot_minimal(
     let event_channel = events::EventChannel::new();
 
     let core = AppCore {
-        remote: Default::default(),
         db: Arc::clone(&pool),
         app_data_dir: paths.app_data_dir.clone(),
         sessions,

@@ -21,8 +21,6 @@ log = "0.4"
 md-5 = "0.10"
 sha2 = "0.10"
 futures-util = { version = "0.3", features = ["sink"] }
-rand = "0.8"
-tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 base64 = "0.22"
@@ -62,10 +60,9 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 junction = "2.1"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Credentials", "Win32_System_Console", "Win32_System_DataExchange", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Ole", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Console", "Win32_System_DataExchange", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Ole", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-security-framework = "3"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL"] }
 
