@@ -188,10 +188,10 @@ mod tests {
     }
 
     #[test]
-    fn agent_guide_names_agent_commands_and_excludes_person_only_remote() {
+    fn agent_guide_names_agent_commands() {
         let clap = crate::command::Cli::command()
             .get_subcommands()
-            .filter(|command| !command.is_hide_set() && command.get_name() != "remote")
+            .filter(|command| !command.is_hide_set())
             .map(|command| command.get_name().to_owned())
             .collect::<BTreeSet<_>>();
         let guide = AGENT_TOP_LEVEL_COMMANDS
@@ -199,7 +199,6 @@ mod tests {
             .map(|command| (*command).to_owned())
             .collect::<BTreeSet<_>>();
         assert_eq!(guide, clap);
-        assert!(!AGENT_GUIDE.contains("runner remote"));
         assert!(crate::command::Cli::command()
             .find_subcommand("hook")
             .unwrap()

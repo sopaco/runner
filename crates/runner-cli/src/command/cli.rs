@@ -24,11 +24,6 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub(super) enum Command {
-    /// Connect this computer to your remote access account.
-    Remote {
-        #[command(subcommand)]
-        command: crate::remote::RemoteCommand,
-    },
     #[command(hide = true)]
     Hook {
         #[command(subcommand)]

@@ -694,18 +694,6 @@ offline_goldens! {
     mission_remove_role => vec!["mission", "remove-role", "--help"],
     root => vec!["--help"],
     daemon => vec!["daemon", "--help"],
-    remote => vec!["remote", "--help"],
-    remote_computers => vec!["remote", "computers", "--help"],
-    remote_pair => vec!["remote", "pair", "--help"],
-    remote_forget => vec!["remote", "forget", "--help"],
-    remote_overview => vec!["remote", "overview", "--help"],
-    remote_status => vec!["remote", "status", "--help"],
-    remote_login => vec!["remote", "login", "--help"],
-    remote_logout => vec!["remote", "logout", "--help"],
-    remote_pin => vec!["remote", "pin", "--help"],
-    remote_devices => vec!["remote", "devices", "--help"],
-    remote_revoke => vec!["remote", "revoke", "--help"],
-    remote_reset_identity => vec!["remote", "reset-identity", "--help"],
     project => vec!["project", "--help"],
     role => vec!["role", "--help"],
     crew => vec!["crew", "--help"],
@@ -1013,26 +1001,6 @@ fn normalization_preserves_fixed_offsets_and_non_build_hashes() {
         )),
         "pid         <PID>\nexe_sha256  <EXE_SHA256>\nnext_offset  692\n"
     );
-}
-
-#[test]
-fn remote_revoke_unknown_fingerprint_reports_refusal_and_exits_one() {
-    let mut fixture = Fixture::new();
-    fixture.start();
-    for inside in [false, true] {
-        let output = fixture
-            .command(inside)
-            .args(["remote", "revoke", "typo"])
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(1));
-        assert!(output.stdout.is_empty());
-        assert_eq!(
-            String::from_utf8(output.stderr).unwrap().trim(),
-            "No paired device has fingerprint typo."
-        );
-    }
-    assert!(!fixture.data.join("remote-trust.json").exists());
 }
 
 #[test]

@@ -63,7 +63,7 @@ pub(super) fn output_view(command: &Command) -> output::View {
     use output::View;
 
     match command {
-        Command::Remote { .. } | Command::Daemon { .. } | Command::Hook { .. } => View::Generic,
+        Command::Daemon { .. } | Command::Hook { .. } => View::Generic,
         Command::Status => View::Status,
         Command::Project { command } => match command {
             ProjectCommand::List => View::ProjectList,

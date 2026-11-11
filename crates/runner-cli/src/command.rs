@@ -44,9 +44,6 @@ use shared::*;
 use status::*;
 
 pub fn run(cli: Cli) -> i32 {
-    if let Command::Remote { command } = &cli.command {
-        return crate::remote::run(command, cli.json);
-    }
     if let Command::Hook { command } = &cli.command {
         return runner_cli::hook::run(command);
     }
@@ -367,7 +364,7 @@ async fn run_connected(
     context: &BusContext,
 ) -> Result<ToolResponse, CliError> {
     match &cli.command {
-        Command::Remote { .. } | Command::Daemon { .. } | Command::Hook { .. } => unreachable!(),
+        Command::Daemon { .. } | Command::Hook { .. } => unreachable!(),
         Command::Status => unreachable!(),
         Command::Project { command } => run_project(client, command).await,
         Command::Role { command } => run_role(client, command).await,
