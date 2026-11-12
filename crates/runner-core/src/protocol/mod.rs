@@ -1,6 +1,4 @@
 pub mod api;
-pub mod claude_accounts;
-pub use claude_accounts::*;
 pub mod client;
 pub mod command;
 pub mod crew;

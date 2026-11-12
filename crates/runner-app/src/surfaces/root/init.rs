@@ -74,10 +74,7 @@ impl NativeRoot {
             loop {
                 match app_events.recv().await {
                     Ok(event)
-                        if matches!(
-                            event.name.as_str(),
-                            "runtime/changed" | "usage/updated" | "claude_accounts/changed"
-                        ) =>
+                        if matches!(event.name.as_str(), "runtime/changed" | "usage/updated") =>
                     {
                         if runtime_event_tx.unbounded_send(event.name).is_err() {
                             break;
@@ -308,7 +305,6 @@ impl NativeRoot {
             route: initial_route.clone(),
             settings_return_route: initial_route,
             usage_open: false,
-            claude_account_picker: None,
             usage_anchor: None,
             usage_installed: crate::surfaces::app_shell::usage_installed(&core),
             agent_updates: crate::surfaces::app_shell::agents_with_updates(&core),

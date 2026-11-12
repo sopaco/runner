@@ -132,7 +132,6 @@ fn custom_claude_settings_do_not_prepare_a_status_watcher() {
             None,
             None,
             None,
-            None,
         );
         assert!(!spec.env.contains_key("RUNNER_CLAUDE_STATUS_PATH"));
         assert!(!spec
@@ -168,7 +167,6 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
             &fixture_tmp_dir().join("runner-app-data"),
             None,
             Some("first turn"),
-            None,
             None,
         );
         if runtime == "claude-code" {

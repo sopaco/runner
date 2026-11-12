@@ -73,9 +73,6 @@ impl AgentsPane {
             } else {
                 self.render_not_installed_page(runtime, cx)
             })
-            .children(
-                (installed && runtime.name == Runtime::ClaudeCode).then(|| self.accounts.clone()),
-            )
             .into_any_element()
     }
 
@@ -109,20 +106,6 @@ impl AgentsPane {
             }
             if runtime.override_path.is_some() {
                 parts.push(crate::i18n::text("ui.custom_path").to_owned());
-            }
-            if name == Runtime::ClaudeCode {
-                let accounts = &self.app_store.read(cx).claude_accounts;
-                if accounts.multiple() {
-                    if let Some(active) = accounts.active() {
-                        parts.push(crate::i18n::tf(
-                            "accounts.active_count",
-                            &[
-                                ("name", active.name.clone()),
-                                ("count", accounts.accounts.len().to_string()),
-                            ],
-                        ));
-                    }
-                }
             }
             if parts.is_empty() {
                 parts.push(presentation.badge.to_owned());

@@ -200,7 +200,6 @@ impl SessionManager {
         system_prompt_path: Option<&Path>,
         first_turn: Option<&str>,
         mission_bus_dir: Option<&Path>,
-        pool: Option<&DbPool>,
     ) -> bool {
         let adapter = crate::runtimes::for_key(&role.runtime);
         let env = crate::shell_path::LoginShellEnv {
@@ -214,12 +213,7 @@ impl SessionManager {
                 .models
                 .catalog(
                     runtime,
-                    &crate::runtime_status::models::source_with_main(
-                        runtime,
-                        &spec.command,
-                        &env,
-                        pool,
-                    ),
+                    &crate::runtime_status::models::source_with_env(runtime, &spec.command, &env),
                 )?
                 .default_model
                 .clone()

@@ -26,7 +26,6 @@ pub fn skill_catalogs(core: &AppCore) -> Vec<SkillCatalog> {
         .read()
         .map(|env| env.vars.clone())
         .unwrap_or_default();
-    let env = crate::claude_accounts::sharing::config_env(&core.db, env);
     crate::runtimes::catalogs()
         .iter()
         .filter_map(|runtime| {
@@ -35,18 +34,7 @@ pub fn skill_catalogs(core: &AppCore) -> Vec<SkillCatalog> {
         .collect()
 }
 
-pub fn set_global_enabled(
-    core: &AppCore,
-    runtime: Runtime,
-    path: &Path,
-    enabled: bool,
-) -> Result<SkillCatalog> {
-    let env = crate::claude_accounts::sharing::config_env(&core.db, Default::default());
-    if let Some(result) =
-        crate::runtimes::adapter(runtime).toggle_skill_with_env(&home_dir()?, path, enabled, &env)
-    {
-        return result;
-    }
+pub fn set_global_enabled(runtime: Runtime, path: &Path, enabled: bool) -> Result<SkillCatalog> {
     set_global_enabled_at(
         &home_dir()?,
         codex_home().as_deref(),
@@ -62,7 +50,6 @@ pub fn read_skill(core: &AppCore, runtime: Runtime, path: &Path) -> Result<Strin
         .read()
         .map(|env| env.vars.clone())
         .unwrap_or_default();
-    let env = crate::claude_accounts::sharing::config_env(&core.db, env);
     read_skill_at_with_env(&home_dir()?, codex_home().as_deref(), runtime, path, &env)
 }
 
@@ -72,7 +59,6 @@ pub fn save_skill(core: &AppCore, runtime: Runtime, path: &Path, text: &str) -> 
         .read()
         .map(|env| env.vars.clone())
         .unwrap_or_default();
-    let env = crate::claude_accounts::sharing::config_env(&core.db, env);
     save_skill_at_with_env(
         &home_dir()?,
         codex_home().as_deref(),

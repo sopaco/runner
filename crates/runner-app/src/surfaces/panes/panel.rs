@@ -13,7 +13,6 @@ pub(super) fn chat_panel_content(
     width: f32,
     session_key_copy: Entity<CopyValueButton>,
     actions: ChatPanelActions,
-    account: Option<(String, Option<String>, String)>,
     cx: &App,
 ) -> AnyElement {
     let column = width - 2. * 20. - 2. * 14. - 2.;
@@ -88,7 +87,7 @@ pub(super) fn chat_panel_content(
                         .border_color(theme::border_strong())
                         .bg(theme::panel())
                         .p(rems(14. / 16.))
-                        .child(chat_panel_setup(detail, role, column, account.as_ref()))
+                        .child(chat_panel_setup(detail, role, column))
                         .child(div().h(rems(1. / 16.)).w_full().bg(theme::border()))
                         .child(
                             div()
@@ -99,9 +98,6 @@ pub(super) fn chat_panel_content(
                                     "cmd",
                                     side_panel_value(detail.agent_command.clone()),
                                 ))
-                                .children(account.map(|(_, _, folder)| {
-                                    side_panel_row("config", side_panel_value(folder))
-                                }))
                                 .children(
                                     cwd.map(|cwd| side_panel_row("cwd", side_panel_value(cwd))),
                                 )
@@ -186,7 +182,6 @@ pub(super) fn chat_panel_setup(
     detail: &DirectSessionEntry,
     role: Option<&runner_core::protocol::model::Role>,
     column: f32,
-    account: Option<&(String, Option<String>, String)>,
 ) -> AnyElement {
     let identity_width = column - 40. - 12.;
     let half_column = (column - 16.) / 2.;
@@ -242,70 +237,24 @@ pub(super) fn chat_panel_setup(
         .flex_col()
         .gap(rems(14. / 16.))
         .child(identity)
-        .children(if let Some((name, email, _)) = account {
-            Some(
+        .children(role.map(|_| {
+            setup_row(
+                crate::i18n::text("heading.runtime"),
                 div()
+                    .min_w(px(0.))
                     .flex()
-                    .gap_4()
-                    .child(
-                        setup_row(
-                            crate::i18n::text("heading.runtime"),
-                            div()
-                                .min_w(px(0.))
-                                .flex()
-                                .items_center()
-                                .gap(rems(6. / 16.))
-                                .child(runtime_mark(&detail.agent_runtime, 12.))
-                                .child(setup_value(
-                                    runtime_display_name(&detail.agent_runtime),
-                                    half_column - 18.,
-                                    false,
-                                    false,
-                                ))
-                                .into_any_element(),
-                        )
-                        .flex_1(),
-                    )
-                    .child(
-                        setup_row(
-                            crate::i18n::text("accounts.account"),
-                            div()
-                                .debug_selector(|| "CHAT_ACCOUNT_DETAIL".into())
-                                .min_w(px(0.))
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .child(setup_value(name.clone(), half_column, false, false))
-                                .children(email.as_ref().map(|email| {
-                                    column_text(email.clone(), half_column)
-                                        .text_size(theme::text_meta())
-                                        .text_color(theme::faint())
-                                }))
-                                .into_any_element(),
-                        )
-                        .flex_1(),
-                    ),
+                    .items_center()
+                    .gap(rems(6. / 16.))
+                    .child(runtime_mark(&detail.agent_runtime, 12.))
+                    .child(setup_value(
+                        runtime_display_name(&detail.agent_runtime),
+                        column - 18.,
+                        false,
+                        false,
+                    ))
+                    .into_any_element(),
             )
-        } else {
-            role.map(|_| {
-                setup_row(
-                    crate::i18n::text("heading.runtime"),
-                    div()
-                        .min_w(px(0.))
-                        .flex()
-                        .items_center()
-                        .gap(rems(6. / 16.))
-                        .child(runtime_mark(&detail.agent_runtime, 12.))
-                        .child(setup_value(
-                            runtime_display_name(&detail.agent_runtime),
-                            column - 18.,
-                            false,
-                            false,
-                        ))
-                        .into_any_element(),
-                )
-            })
-        })
+        }))
         .child(
             div()
                 .flex()
@@ -326,20 +275,6 @@ pub(super) fn chat_panel_setup(
                 ),
         )
         .into_any_element()
-}
-
-pub(super) fn account_chip(name: String) -> Div {
-    div()
-        .debug_selector(|| "CHAT_ACCOUNT_CHIP".into())
-        .flex_none()
-        .max_w(rems(160. / 16.))
-        .truncate()
-        .px_2()
-        .rounded_sm()
-        .bg(theme::raised())
-        .text_size(theme::text_meta())
-        .text_color(theme::muted())
-        .child(name)
 }
 
 pub(super) fn side_panel_label(label: &'static str) -> AnyElement {

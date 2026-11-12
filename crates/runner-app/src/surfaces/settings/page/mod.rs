@@ -1025,14 +1025,6 @@ impl NativeRoot {
         .detach();
     }
 
-    pub(crate) fn open_claude_accounts(&self, cx: &mut Context<Self>) {
-        if let Some(agents) = &self.settings_page.agents {
-            agents.update(cx, |agents, cx| {
-                agents.open_runtime(runner_core::protocol::Runtime::ClaudeCode, cx)
-            });
-        }
-    }
-
     pub(crate) fn refresh_agents_pane(&self, cx: &mut Context<Self>) {
         if let Some(agents) = self.settings_page.agents.clone() {
             agents.update(cx, |pane, pane_cx| pane.refresh(pane_cx));
@@ -1059,13 +1051,6 @@ impl NativeRoot {
     pub(crate) fn settings_confirm_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if self.route != AppRoute::Settings {
             return None;
-        }
-        if self.settings_page.pane == SettingsPane::Agents {
-            return self
-                .settings_page
-                .agents
-                .as_ref()
-                .map(|agents| agents.read(cx).accounts_overlay(cx));
         }
         self.settings_page
             .archived
@@ -2321,7 +2306,6 @@ mod localization_tests {
                 store
                     .sessions
                     .push(runner_core::protocol::session::DirectSessionEntry {
-                        claude_account: None,
                         session_id: "owned-shell".into(),
                         project_id: None,
                         role_id: None,

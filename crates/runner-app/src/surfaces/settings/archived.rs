@@ -763,7 +763,6 @@ mod tests {
 
     fn chat(id: &str, title: Option<&str>, cwd: &str, archived_at: &str) -> DirectSessionEntry {
         DirectSessionEntry {
-            claude_account: None,
             session_id: id.into(),
             project_id: None,
             role_id: None,

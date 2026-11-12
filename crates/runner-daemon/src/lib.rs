@@ -9,7 +9,6 @@
 pub use runner_core::app_paths;
 
 pub mod agent_skill;
-pub mod claude_accounts;
 pub mod cli_install;
 pub mod daemon;
 pub mod db;
@@ -60,7 +59,6 @@ pub struct AppCore {
     /// Current login-shell probe state and diagnostics for agent availability.
     pub runtime_discovery: runtime_status::SharedDiscoveryState,
     pub usage: Arc<usage::UsageService>,
-    pub claude_accounts: Arc<claude_accounts::AccountService>,
     /// Live per-mission event-bus watchers. Mounted by `mission_start` once
     /// the opening events are durable; unmounted by `mission_stop` and on
     /// any rollback path.

@@ -321,17 +321,6 @@ pub(super) fn usage_section(
     refreshing: bool,
     now: chrono::DateTime<chrono::Utc>,
 ) -> AnyElement {
-    usage_section_with_account(runtime, usage, reason, refreshing, now, None)
-}
-
-pub(super) fn usage_section_with_account(
-    runtime: Runtime,
-    usage: Option<&AgentUsage>,
-    reason: Option<UnavailableReason>,
-    refreshing: bool,
-    now: chrono::DateTime<chrono::Utc>,
-    account_picker: Option<AnyElement>,
-) -> AnyElement {
     let ui = crate::runtime_ui::runtime_ui(runtime);
     let name = ui.usage_title;
     let refresh_spinner_id = ui.usage_refresh_spinner;
@@ -399,7 +388,6 @@ pub(super) fn usage_section_with_account(
                         .child(name),
                 )
                 .child(div().flex_1())
-                .children(account_picker)
                 .children(
                     (refreshing && usage.is_some())
                         .then(|| spinner(refresh_spinner_id, 12., theme::muted())),
@@ -484,107 +472,6 @@ pub(crate) fn alpha(mut color: gpui::Hsla, value: f32) -> gpui::Hsla {
 }
 
 impl NativeRoot {
-    pub(super) fn render_claude_usage_picker(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        use runner_app::ui::select::{SelectLeading, SelectOption, StyledSelect};
-        let store = self.app_store.read(cx);
-        if !store.claude_accounts.multiple() {
-            return None;
-        }
-        let accounts = store.claude_accounts.clone();
-        let mut options = accounts
-            .accounts
-            .iter()
-            .filter(|account| {
-                accounts
-                    .statuses
-                    .get(&account.id)
-                    .is_some_and(|status| status.logged_in)
-            })
-            .map(|account| {
-                let weekly = store
-                    .claude_account_usage
-                    .get(&account.id)
-                    .and_then(|usage| usage.value.as_ref())
-                    .and_then(|usage| usage.windows.iter().find(|window| window.name == "Week"))
-                    .map(|window| format!("{:.0}%", window.used_percent))
-                    .unwrap_or_else(|| "—".into());
-                SelectOption::new(account.id.clone(), account.name.clone()).description(weekly)
-            })
-            .collect::<Vec<_>>();
-        options.push(
-            SelectOption::new("manage", crate::i18n::message("accounts.manage"))
-                .leading(SelectLeading::new("manage-accounts", |size| {
-                    svg()
-                        .path("settings.svg")
-                        .size(rems(size / 16.))
-                        .text_color(theme::muted())
-                        .into_any_element()
-                }))
-                .separator_before(true),
-        );
-        let owner = cx.weak_entity();
-        let picker = self.claude_account_picker.get_or_insert_with(|| {
-            cx.new(|cx| {
-                StyledSelect::new(
-                    "claude-usage-account",
-                    cx.focus_handle(),
-                    accounts.active_id.clone(),
-                    Vec::new(),
-                    Rc::new(move |id, window, cx| {
-                        let _ = owner.update(cx, |this, cx| {
-                            if id == "manage" {
-                                this.usage_open = false;
-                                this.enter_settings_route(Some("agents"), window, cx);
-                                this.open_claude_accounts(cx);
-                            } else {
-                                let client = this.core(cx).clone();
-                                let store = this.app_store.clone();
-                                let task = cx.background_spawn(async move {
-                                    client.claude_account_action(
-                                        runner_core::protocol::ClaudeAccountAction::Use { id },
-                                    )
-                                });
-                                cx.spawn(async move |_, cx| {
-                                    let result = task.await;
-                                    store.update(cx, |store, cx| {
-                                        if let Err(error) = result {
-                                            store.error = Some(crate::surfaces::settings::claude_accounts::account_error(&error.to_string()).into());
-                                        }
-                                        store.refresh(
-                                            crate::app_store::StoreRefreshKind::Activity,
-                                            cx,
-                                        );
-                                    });
-                                })
-                                .detach();
-                            }
-                            cx.notify();
-                        });
-                    }),
-                    cx,
-                )
-                .compact(true)
-                .width(px(120.))
-                .min_menu_width(px(208.))
-            })
-        });
-        picker.update(cx, |picker, cx| {
-            if picker.value() != accounts.active_id {
-                picker.set_value(accounts.active_id.clone(), cx);
-            }
-            if let Some(active) = accounts.active() {
-                if picker.placeholder_text() != active.name {
-                    picker.set_placeholder(active.name.clone(), cx);
-                }
-            }
-            picker.set_options(options, cx);
-        });
-        Some(picker.clone().into_any_element())
-    }
-
     pub(super) fn render_usage_popover(
         &mut self,
         window: &Window,
@@ -682,29 +569,17 @@ impl NativeRoot {
                         .bg(theme::accent())
                 })),
         );
-        let mut account_picker = self.render_claude_usage_picker(cx);
         let sections: Vec<AnyElement> =
             usage_popover_runtimes(&self.usage_installed, &self.settings(cx).model_runtimes())
                 .into_iter()
                 .map(|runtime| {
-                    if runtime == Runtime::ClaudeCode && account_picker.is_some() {
-                        usage_section_with_account(
-                            runtime,
-                            snapshot.get(runtime),
-                            snapshot.error(runtime),
-                            snapshot.refreshing,
-                            now,
-                            account_picker.take(),
-                        )
-                    } else {
-                        usage_section(
-                            runtime,
-                            snapshot.get(runtime),
-                            snapshot.error(runtime),
-                            snapshot.refreshing,
-                            now,
-                        )
-                    }
+                    usage_section(
+                        runtime,
+                        snapshot.get(runtime),
+                        snapshot.error(runtime),
+                        snapshot.refreshing,
+                        now,
+                    )
                 })
                 .collect();
         let header = div()

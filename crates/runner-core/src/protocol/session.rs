@@ -41,8 +41,6 @@ pub struct SessionRow {
 ///     attach.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectSessionEntry {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claude_account: Option<super::ClaudeSessionAccount>,
     pub session_id: String,
     pub project_id: Option<String>,
     pub role_id: Option<String>,

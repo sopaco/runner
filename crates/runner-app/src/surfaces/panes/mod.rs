@@ -462,7 +462,6 @@ mod tests {
 
     fn direct_session(runtime: &str, native_fork: bool, forkable: bool) -> DirectSessionEntry {
         DirectSessionEntry {
-            claude_account: None,
             session_id: format!("{runtime}-session"),
             project_id: None,
             role_id: None,
@@ -1222,13 +1221,6 @@ mod tests {
                         expanded: false,
                         view: cx.entity_id(),
                     },
-                    self.detail.claude_account.as_ref().map(|account| {
-                        (
-                            "Work".into(),
-                            Some("fixture@example.test".into()),
-                            account.folder.clone(),
-                        )
-                    }),
                     cx,
                 ))
         }
@@ -1255,7 +1247,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_header_preserves_account_spacing_and_controls_in_narrow_panes() {
+    fn claude_header_preserves_status_controls_in_narrow_panes() {
         let _theme = crate::theme_snapshot::ThemeGuard::new();
         let temp = tempfile::tempdir().unwrap();
         let mut cx = gpui::TestAppContext::single();
@@ -1265,8 +1257,6 @@ mod tests {
             {
                 let conn = store.test_core.db.get().unwrap();
                 conn.execute("UPDATE sessions SET status='stopped', agent_runtime='claude-code', agent_command='claude', title='Claude Code' WHERE id='direct-agent'",[]).unwrap();
-                let accounts = serde_json::json!({"accounts":[{"id":"native","name":"Personal","folder":"/tmp/native","native":true},{"id":"work","name":"Work","folder":"/tmp/work","native":false}],"main_id":"native","active_id":"work"});
-                conn.execute("INSERT INTO _app_state(key,value) VALUES('claude_accounts',?1)",[accounts.to_string()]).unwrap();
             }
             store.settings.chat_panel_open = true;
             store.settings.keymap_overrides.insert("resume-session".into(), Some(crate::keymap::KeyCombo { meta: false, ctrl: false, alt: false, shift: false, code: "F8".into(), label: None, shift_optional: false }));
@@ -1292,6 +1282,20 @@ mod tests {
         });
         let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
         for zoom in [1., 1.3] {
+            let preferred = f32::from(visual.update(|window, _| {
+                let mut style = window.text_style();
+                style.font_weight = gpui::FontWeight::MEDIUM;
+                window
+                    .text_system()
+                    .shape_line(
+                        "Claude Code".into(),
+                        px(12. * zoom),
+                        &[style.to_run("Claude Code".len())],
+                        None,
+                    )
+                    .width
+                    .ceil()
+            }));
             host.update(&mut visual, |root, window, cx| {
                 root.set_zoom(zoom, window, cx)
             })
@@ -1303,27 +1307,28 @@ mod tests {
                 ));
                 visual.run_until_parked();
                 let header = visual.debug_bounds("PANE_HEADER:direct-agent").unwrap();
-                let chip = visual.debug_bounds("CHAT_ACCOUNT_CHIP");
                 let name = visual.debug_bounds("PANE_TITLE:Claude Code").unwrap();
-                if let Some(chip) = chip {
-                    assert!(chip.top() >= header.top() && chip.bottom() <= header.bottom());
-                    assert!((chip.left() - name.right() - px(8. * zoom)).abs() < px(1.));
-                }
-                assert_eq!(chip.is_some(), width >= 360.);
                 let indicator = visual.debug_bounds("ISLAND_STATUS_INDICATOR").unwrap();
                 let button = visual.debug_bounds("PANE_LIFECYCLE:Resume chat").unwrap();
                 let actions = visual.debug_bounds("PANE_HEADER_ACTIONS").unwrap();
-                assert!(indicator.left() >= chip.map_or(name.right(), |chip| chip.right()));
+                assert!(indicator.left() >= name.right());
                 assert!(
                     button.right() <= actions.left(),
-                    "{width}: {button:?}, {actions:?}, name={name:?}, chip={chip:?}, status={indicator:?}, identity={:?}", visual.debug_bounds("ISLAND_HEADER_IDENTITY")
+                    "{width}: {button:?}, {actions:?}, name={name:?}, status={indicator:?}, identity={:?}", visual.debug_bounds("ISLAND_HEADER_IDENTITY")
                 );
                 assert!(actions.right() <= header.right());
-                assert_eq!(visual.debug_bounds("ISLAND_STATUS_LABEL").is_some(), width >= 360., "width={width}, name={name:?}, chip={chip:?}, header={header:?}, actions={actions:?}, status={indicator:?}");
+                assert_eq!(visual.debug_bounds("ISLAND_STATUS_LABEL").is_some(), width >= 360., "width={width}, name={name:?}, header={header:?}, actions={actions:?}, status={indicator:?}");
+                if width == 240. {
+                    assert!(name.size.width >= px(24. * zoom), "{name:?}");
+                    assert!(
+                        f32::from(name.size.width) < preferred - 0.5,
+                        "{name:?}, preferred={preferred}"
+                    );
+                }
                 if width == 360. {
                     assert!(
-                        name.size.width >= px(24. * zoom) && name.size.width < px(70. * zoom),
-                        "{name:?}"
+                        (f32::from(name.size.width) - preferred).abs() < 0.5,
+                        "{name:?}, preferred={preferred}"
                     );
                 }
                 assert!(visual
@@ -1348,32 +1353,15 @@ mod tests {
         visual.run_until_parked();
         let actions = visual.debug_bounds("PANE_HEADER_ACTIONS").unwrap();
         let lifecycle = visual.debug_bounds("PANE_LIFECYCLE:Resume chat").unwrap();
-        assert!(lifecycle.right() <= actions.left(), "lifecycle={lifecycle:?}, actions={actions:?}, identity={:?}, chip={:?}, name={:?}, status={:?}", visual.debug_bounds("ISLAND_HEADER_IDENTITY"), visual.debug_bounds("CHAT_ACCOUNT_CHIP"), visual.debug_bounds("PANE_TITLE:Claude Code"), visual.debug_bounds("ISLAND_STATUS_INDICATOR"));
+        assert!(
+            lifecycle.right() <= actions.left(),
+            "lifecycle={lifecycle:?}, actions={actions:?}, identity={:?}, name={:?}, status={:?}",
+            visual.debug_bounds("ISLAND_HEADER_IDENTITY"),
+            visual.debug_bounds("PANE_TITLE:Claude Code"),
+            visual.debug_bounds("ISLAND_STATUS_INDICATOR")
+        );
         assert!(visual.debug_bounds("ISLAND_STATUS_LABEL").is_none());
         assert!(visual.debug_bounds("BUTTON_SHORTCUT:F8").is_none());
-    }
-
-    #[test]
-    fn account_is_beside_runtime_and_config_is_in_the_metadata_rows() {
-        let _theme = crate::theme_snapshot::ThemeGuard::new();
-        let mut detail = direct_session("claude-code", true, true);
-        detail.claude_account = Some(runner_core::protocol::ClaudeSessionAccount {
-            account_id: Some("work".into()),
-            folder: "/tmp/work".into(),
-            native: false,
-            pinned: false,
-            origin_folder: "/tmp/native".into(),
-            permission_mode: "default".into(),
-        });
-        for role in [None, Some(panel_role())] {
-            let (_cx, mut visual) = panel_harness(detail.clone(), role, 320.);
-            let runtime = visual.debug_bounds("SETUP_ROW RUNTIME").unwrap();
-            let account = visual.debug_bounds("SETUP_ROW Account").unwrap();
-            assert!((runtime.top() - account.top()).abs() <= px(1.));
-            assert!(account.left() > runtime.left());
-            let config = visual.debug_bounds("CHAT_PANEL_META /tmp/work").unwrap();
-            assert!(config.top() > account.bottom());
-        }
     }
 
     #[test]

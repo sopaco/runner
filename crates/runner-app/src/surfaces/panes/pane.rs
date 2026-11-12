@@ -209,11 +209,6 @@ impl NativeRoot {
                         })
                         .into_any_element()
                 };
-                let account = entry
-                    .local
-                    .as_ref()
-                    .and_then(|entry| self.claude_account_details(entry, cx))
-                    .map(|(name, _, _)| name);
                 let lifecycle = status
                     .as_ref()
                     .and_then(|status| {
@@ -282,13 +277,9 @@ impl NativeRoot {
                     } else {
                         text_width(&label, 12., FontWeight::MEDIUM)
                     };
-                    let account_preferred = account.as_ref().map_or(0., |account| {
-                        (text_width(account, 11., FontWeight::NORMAL) + 16. * zoom).min(160. * zoom)
-                    });
                     let fixed = (15.
                         + if grouped { 18. } else { 0. }
                         + 8.
-                        + if account.is_some() { 8. } else { 0. }
                         + if status.is_some() { 8. } else { 0. })
                         * zoom;
                     let budget = (f32::from(size.width) - fixed - 1.).max(0.);
@@ -296,13 +287,12 @@ impl NativeRoot {
                         .as_ref()
                         .map_or(0., |status| status.island_label_width(window));
                     let min_name = name_preferred.min(28. * zoom);
-                    let label_visible =
-                        status.is_some() && budget >= min_name + account_preferred + label_width;
+                    let label_visible = status.is_some() && budget >= min_name + label_width;
                     let detail_visible = label_visible
                         && status
                             .as_ref()
                             .is_some_and(|status| status.has_island_detail())
-                        && budget >= name_preferred + account_preferred + 180. * zoom;
+                        && budget >= name_preferred + 180. * zoom;
                     let status_width = if detail_visible {
                         180. * zoom
                     } else if label_visible {
@@ -312,15 +302,7 @@ impl NativeRoot {
                     } else {
                         0.
                     };
-                    let account_visible =
-                        account.is_some() && budget - status_width - min_name >= 24. * zoom;
-                    let account_width = if account_visible {
-                        account_preferred.min((budget - status_width - min_name).max(16. * zoom))
-                    } else {
-                        0.
-                    };
-                    let name_width =
-                        name_preferred.min((budget - status_width - account_width).max(0.));
+                    let name_width = name_preferred.min((budget - status_width).max(0.));
                     div()
                         .debug_selector(|| "ISLAND_HEADER_IDENTITY".into())
                         .size_full()
@@ -337,12 +319,6 @@ impl NativeRoot {
                                 .overflow_hidden()
                                 .child(name),
                         )
-                        .children(account.filter(|_| account_visible).map(|account| {
-                            account_chip(account)
-                                .ml_2()
-                                .min_w(px(0.))
-                                .w(px(account_width))
-                        }))
                         .children(status.map(|status| {
                             runner_app::ui::agent_status::pane_status(
                                 status,
@@ -674,25 +650,7 @@ impl NativeRoot {
                             Some(
                                 SessionOverlay::ended(
                                     format!("ended-{session_id}"),
-                                    entry
-                                        .local
-                                        .as_ref()
-                                        .and_then(|entry| self.claude_paused_text(entry, cx))
-                                        .map_or_else(
-                                            || ended_subtitle(status, resumable, exit_code),
-                                            |account| {
-                                                if !resumable || status == SessionStatus::Crashed {
-                                                    format!(
-                                                        "{} {account}",
-                                                        ended_subtitle(
-                                                            status, resumable, exit_code
-                                                        )
-                                                    )
-                                                } else {
-                                                    account
-                                                }
-                                            },
-                                        ),
+                                    ended_subtitle(status, resumable, exit_code),
                                     move |window, cx| {
                                         resume_root.update(cx, |this, cx| {
                                             this.resume_chat(&resume_pane, &resume_id, window, cx)

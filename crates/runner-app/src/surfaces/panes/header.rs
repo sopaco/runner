@@ -48,55 +48,6 @@ impl NativeRoot {
         )
     }
 
-    pub(super) fn claude_account_details(
-        &self,
-        detail: &DirectSessionEntry,
-        cx: &App,
-    ) -> Option<(String, Option<String>, String)> {
-        let store = self.app_store.read(cx);
-        if detail.agent_runtime != "claude-code" || !store.claude_accounts.multiple() {
-            return None;
-        }
-        let session = detail.claude_account.as_ref();
-        let account = store.claude_accounts.session_account(session);
-        let name = account
-            .map(|account| account.name.clone())
-            .or_else(|| session.map(|session| session.folder.clone()))?;
-        let email = account
-            .and_then(|account| store.claude_accounts.statuses.get(&account.id))
-            .and_then(|status| status.email.clone());
-        let folder = session
-            .map(|session| session.folder.clone())
-            .or_else(|| account.map(|account| account.folder.clone()))?;
-        Some((name, email, folder))
-    }
-
-    pub(super) fn claude_paused_text(
-        &self,
-        detail: &DirectSessionEntry,
-        cx: &App,
-    ) -> Option<String> {
-        if detail
-            .claude_account
-            .as_ref()
-            .is_some_and(|account| account.pinned)
-        {
-            return None;
-        }
-        let (previous, _, folder) = self.claude_account_details(detail, cx)?;
-        let store = self.app_store.read(cx);
-        let active = store.claude_accounts.active()?;
-        let session = detail.claude_account.as_ref();
-        if folder == active.folder && session.is_none_or(|session| session.native == active.native)
-        {
-            return None;
-        }
-        Some(crate::i18n::tf(
-            "accounts.paused",
-            &[("previous", previous), ("active", active.name.clone())],
-        ))
-    }
-
     pub(super) fn render_chat_side_panel(
         &self,
         detail: Option<&DirectSessionEntry>,
@@ -191,15 +142,7 @@ impl NativeRoot {
                 expanded: self.chat_panel_prompt_expanded,
                 view: cx.entity_id(),
             };
-            chat_panel_content(
-                detail,
-                role.as_ref(),
-                width,
-                session_key_copy,
-                actions,
-                self.claude_account_details(detail, cx),
-                cx,
-            )
+            chat_panel_content(detail, role.as_ref(), width, session_key_copy, actions, cx)
         } else {
             div()
                 .text_size(theme::text_ui())

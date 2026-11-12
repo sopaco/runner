@@ -25,7 +25,6 @@ pub struct LoginShellEnvLkg {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct UsageLkg {
     pub runtimes: HashMap<Runtime, AgentUsage>,
-    pub claude_accounts: BTreeMap<String, AgentUsage>,
 }
 
 pub(super) fn ensure_app_state_table(conn: &Connection) -> Result<()> {

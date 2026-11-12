@@ -280,38 +280,9 @@ fn current_source_and_env(
     if command.source == RuntimeCommandSource::Catalog {
         return None;
     }
-    let mut env = shell_env.read().ok()?.clone();
-    let mut source = source_with_env(runtime, &command.command, &env);
-    if runtime == Runtime::ClaudeCode {
-        if let Some(main) = crate::claude_accounts::sharing::main_account(pool) {
-            source.config_home = Some(main.folder.clone().into());
-            env.vars.insert(
-                crate::claude_accounts::sharing::MAIN_NATIVE.into(),
-                main.native.to_string(),
-            );
-            if main.native {
-                env.vars.remove("CLAUDE_CONFIG_DIR");
-            } else {
-                env.vars.insert("CLAUDE_CONFIG_DIR".into(), main.folder);
-            }
-        }
-    }
+    let env = shell_env.read().ok()?.clone();
+    let source = source_with_env(runtime, &command.command, &env);
     Some((source, env))
-}
-
-pub(crate) fn source_with_main(
-    runtime: Runtime,
-    command: &str,
-    env: &LoginShellEnv,
-    pool: Option<&DbPool>,
-) -> ModelSource {
-    let mut source = source_with_env(runtime, command, env);
-    if runtime == Runtime::ClaudeCode {
-        if let Some(main) = pool.and_then(crate::claude_accounts::sharing::main_account) {
-            source.config_home = Some(main.folder.into());
-        }
-    }
-    source
 }
 
 #[cfg(test)]
@@ -407,14 +378,6 @@ pub(crate) fn run(query: Query<'_>) -> Result<Vec<u8>, Reason> {
 fn run_process(query: Query<'_>) -> std::io::Result<Vec<u8>> {
     let mut output = tempfile::tempfile()?;
     let mut command = Command::new(query.executable);
-    if query
-        .env
-        .vars
-        .get(crate::claude_accounts::sharing::MAIN_NATIVE)
-        .is_some_and(|value| value == "true")
-    {
-        command.env_remove("CLAUDE_CONFIG_DIR");
-    }
     command
         .args(query.args)
         .envs(&query.env.vars)

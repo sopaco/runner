@@ -162,26 +162,13 @@ impl SessionManager {
             .then_some(speed_override)
             .flatten();
         role.codex_speed = speed_override.or(role.codex_speed);
-        let mut launch_definition = crate::session::launch_definition::from_effective(&role);
+        let launch_definition = crate::session::launch_definition::from_effective(&role);
         let mut role = self.resolve_role_executable(&role, &pool)?;
         // Attended chats strip the row's permission flags and leave
         // every other arg alone.
         role.args = crate::runtimes::for_key(&role.runtime)
             .permissions()
             .strip(&role.args);
-
-        launch_definition.claude_account = crate::claude_accounts::launch_account(
-            &pool,
-            &mut role,
-            &self.shell_env.read().unwrap().vars,
-            None,
-            true,
-        )?;
-        if let Some(account) = &mut launch_definition.claude_account {
-            account.permission_mode = crate::runtimes::for_key(&role.runtime)
-                .native_permission_mode(&role.args)
-                .expect("account runtime has a native permission mode");
-        }
 
         // Agent-native session resume: `spawn_direct` always opens a *new*
         // chat. The runtime adapter self-assigns a fresh
@@ -245,15 +232,7 @@ impl SessionManager {
             system_prompt_path.as_deref(),
             first_turn.as_deref(),
             None,
-            Some(&pool),
         );
-        crate::claude_accounts::sharing::launch(
-            &pool,
-            launch_definition.claude_account.as_ref(),
-            &role,
-            &mut spec,
-        )?;
-
         // Insert the row first so a fast-failing spawn doesn't leave
         // a half-row. Every chat carries its spawned engine on the row
         // via agent_runtime / agent_command: runtime-only chats have no

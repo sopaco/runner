@@ -203,44 +203,6 @@ pub(crate) fn fetch_claude(env: &LoginShellEnv) -> Result<Vec<UsageWindow>, Unav
     fetch_token(env, token)
 }
 
-#[cfg(any(target_os = "macos", test))]
-pub(crate) fn credential_service(folder: Option<&str>) -> String {
-    use sha2::{Digest, Sha256};
-    folder
-        .map(|folder| {
-            format!(
-                "Claude Code-credentials-{}",
-                &format!("{:x}", Sha256::digest(folder.as_bytes()))[..8]
-            )
-        })
-        .unwrap_or_else(|| "Claude Code-credentials".into())
-}
-
-pub(crate) fn fetch_account(
-    env: &LoginShellEnv,
-    account: &runner_core::protocol::ClaudeAccount,
-    denied: bool,
-) -> Result<Vec<UsageWindow>, UnavailableReason> {
-    if denied {
-        return Err(UnavailableReason::KeychainDenied);
-    }
-    if account.native {
-        return fetch_claude(env);
-    }
-    #[cfg(target_os = "macos")]
-    let bytes = read_credentials_service(
-        std::path::Path::new("/usr/bin/security"),
-        keychain_account(std::env::var("USER").ok().as_deref()),
-        &credential_service(Some(&account.folder)),
-        KEYCHAIN_TIMEOUT,
-    )?;
-    #[cfg(not(target_os = "macos"))]
-    let bytes = read_claude_credentials_file(
-        &std::path::Path::new(&account.folder).join(".credentials.json"),
-    )?;
-    fetch_token(env, parse_credentials(&bytes)?)
-}
-
 fn fetch_token(env: &LoginShellEnv, token: String) -> Result<Vec<UsageWindow>, UnavailableReason> {
     let client = http_client(env).map_err(|_| UnavailableReason::ClaudeUnreachable)?;
     let request = client
@@ -270,35 +232,8 @@ fn fetch_token(env: &LoginShellEnv, token: String) -> Result<Vec<UsageWindow>, U
 }
 
 #[cfg(test)]
-mod account_tests {
+mod credentials_tests {
     use super::*;
-
-    #[test]
-    fn credentials_are_keyed_to_the_exact_explicit_folder() {
-        assert_eq!(credential_service(None), "Claude Code-credentials");
-        assert_eq!(
-            credential_service(Some("/Users/jason/.claude-work")),
-            "Claude Code-credentials-a6d23975"
-        );
-        assert_ne!(
-            credential_service(None),
-            credential_service(Some("/Users/jason/.claude"))
-        );
-        assert_ne!(
-            credential_service(Some("C:\\Account Folder")),
-            credential_service(Some("C:\\Account Folder\\"))
-        );
-        let account = runner_core::protocol::ClaudeAccount {
-            id: "fixture".into(),
-            name: "Fixture".into(),
-            folder: "/never/read".into(),
-            native: false,
-        };
-        assert_eq!(
-            fetch_account(&LoginShellEnv::default(), &account, true),
-            Err(UnavailableReason::KeychainDenied)
-        );
-    }
 
     #[test]
     fn credential_file_with_spaces_is_read_only_from_the_selected_folder() {

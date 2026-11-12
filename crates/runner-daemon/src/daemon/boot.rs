@@ -103,7 +103,6 @@ pub fn boot_minimal(
         runtime_shell_env: Arc::clone(&runtime_shell_env),
         runtime_discovery: Arc::clone(&runtime_discovery),
         usage: Arc::new(crate::usage::UsageService::default()),
-        claude_accounts: Default::default(),
         buses: event_bus::BusRegistry::new(),
         routers: crate::router::RouterRegistry::new(),
         mission_roster_locks: Default::default(),

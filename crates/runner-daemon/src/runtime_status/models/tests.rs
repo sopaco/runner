@@ -458,30 +458,18 @@ cat "$d/catalog""#,
         )
         .unwrap();
         assert_eq!(request["request"]["subtype"], "list_models");
-        let native = fixture.dir.path().join(".claude");
-        let work = fixture.dir.path().join("work folder");
         fixture
             .env
             .write()
             .unwrap()
             .vars
             .insert("CLAUDE_CONFIG_DIR".into(), "unrelated-shell-pin".into());
-        for main in ["work", "native"] {
-            crate::db::app_state_set(&fixture.pool.get().unwrap(), "claude_accounts", &serde_json::json!({
-                "accounts":[{"id":"native","name":"Personal","folder":native,"native":true},{"id":"work","name":"Work","folder":work,"native":false}],
-                "main_id":main,"active_id":"work"
-            }).to_string()).unwrap();
-            fixture.refresh(true);
-            assert!(fixture.catalog().is_some());
-            assert_eq!(
-                std::fs::read_to_string(fixture.dir.path().join("config-target")).unwrap(),
-                if main == "work" {
-                    work.to_string_lossy().into_owned()
-                } else {
-                    "unset".into()
-                }
-            );
-        }
+        fixture.refresh(true);
+        assert!(fixture.catalog().is_some());
+        assert_eq!(
+            std::fs::read_to_string(fixture.dir.path().join("config-target")).unwrap(),
+            "unrelated-shell-pin"
+        );
 
         let fixture = Fixture::new(Runtime::Trae, "exit 1");
         fixture.refresh(true);

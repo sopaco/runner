@@ -20,8 +20,6 @@ use super::{de_err, insert_sql, qualified_select_list, select_list, ser_err};
 
 #[derive(Serialize, Deserialize)]
 struct LaunchDefinitionRow {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    claude_account: Option<runner_core::protocol::ClaudeSessionAccount>,
     version: u32,
     command: String,
     args: Vec<String>,
@@ -36,7 +34,6 @@ impl From<&LaunchDefinition> for LaunchDefinitionRow {
     fn from(definition: &LaunchDefinition) -> Self {
         Self {
             version: 1,
-            claude_account: definition.claude_account.clone(),
             command: definition.command.clone(),
             args: definition.args.clone(),
             env: definition.env.clone(),
@@ -69,7 +66,6 @@ impl TryFrom<LaunchDefinitionRow> for LaunchDefinition {
         )
         .map_err(|error| error.to_string())?;
         Ok(Self {
-            claude_account: row.claude_account,
             command: row.command,
             args: row.args,
             env: row.env,
@@ -518,9 +514,7 @@ pub(crate) fn set_live_agent_session_key(
     agent_session_key: Option<&str>,
     expected_row_started_at: &str,
 ) -> rusqlite::Result<bool> {
-    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
-    let previous = get_row(&tx, id)?;
-    let updated = tx.execute(
+    let updated = conn.execute(
         "UPDATE sessions
             SET agent_session_key = ?2
           WHERE id = ?1
@@ -528,31 +522,6 @@ pub(crate) fn set_live_agent_session_key(
             AND status = 'running'",
         rusqlite::params![id, agent_session_key, expected_row_started_at],
     )? > 0;
-    if updated {
-        if let (Some(row), Some(key)) = (previous, agent_session_key) {
-            if row.agent_runtime.as_deref() == Some("claude-code")
-                && row.agent_session_key.as_deref() != Some(key)
-            {
-                if let Some(mut definition) = row.launch_definition {
-                    if let Some(account) = &mut definition.claude_account {
-                        // A new conversation belongs to the running account; an existing
-                        // conversation selected again can still live in the old folder.
-                        let exists = crate::claude_accounts::transcript(
-                            &account.origin_folder,
-                            row.cwd.as_deref(),
-                            key,
-                        )
-                        .is_some_and(|path| path.is_file());
-                        if account.origin_folder != account.folder && !exists {
-                            account.origin_folder.clone_from(&account.folder);
-                            set_launch(&tx, id, "claude-code", &definition)?;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    tx.commit()?;
     Ok(updated)
 }
 
@@ -1230,7 +1199,6 @@ mod tests {
             agent_runtime: Some("codex".into()),
             agent_command: Some("codex".into()),
             launch_definition: Some(LaunchDefinition {
-                claude_account: None,
                 command: "codex".into(),
                 args: vec!["--search".into()],
                 env: BTreeMap::from([("MARKER".into(), "before".into())]),
@@ -1981,88 +1949,29 @@ mod launch_definition_tests {
     use super::*;
 
     #[test]
-    fn claude_rekey_preserves_existing_origins_and_updates_key_and_origin_atomically() {
+    fn rekey_updates_the_key_only_for_the_live_generation() {
         let pool = crate::db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
-        let temp = tempfile::tempdir().unwrap();
-        let mut row = SessionRowDb::new_running("claude-rekey".into());
+        let mut row = SessionRowDb::new_running("rekey".into());
         row.started_at = Some(chrono::Utc::now());
-        row.cwd = Some(temp.path().to_string_lossy().into_owned());
         row.agent_runtime = Some("claude-code".into());
         let old_key = uuid::Uuid::new_v4().to_string();
         let new_key = uuid::Uuid::new_v4().to_string();
         row.agent_session_key = Some(old_key.clone());
-        let native = temp.path().join("native").to_string_lossy().into_owned();
-        let work = temp.path().join("work").to_string_lossy().into_owned();
-        row.launch_definition = Some(LaunchDefinition {
-            command: "claude".into(),
-            args: vec![],
-            env: BTreeMap::new(),
-            model: None,
-            effort: None,
-            codex_speed: None,
-            system_prompt: None,
-            claude_account: Some(runner_core::protocol::ClaudeSessionAccount {
-                account_id: Some("work".into()),
-                folder: work.clone(),
-                native: false,
-                pinned: false,
-                origin_folder: native.clone(),
-                permission_mode: "default".into(),
-            }),
-        });
         insert(&conn, &row).unwrap();
         let generation = row.started_at.unwrap().to_rfc3339();
-        let read = || get_row(&conn, &row.id).unwrap().unwrap();
-        let origin = || {
-            read()
-                .launch_definition
-                .unwrap()
-                .claude_account
-                .unwrap()
-                .origin_folder
-        };
+        let key = || get_row(&conn, &row.id).unwrap().unwrap().agent_session_key;
 
         assert!(!set_live_agent_session_key(&conn, &row.id, Some(&new_key), "stale").unwrap());
-        assert_eq!(read(), row);
+        assert_eq!(key().as_deref(), Some(old_key.as_str()));
         assert!(set_live_agent_session_key(&conn, &row.id, Some(&old_key), &generation).unwrap());
-        assert_eq!(read(), row);
-
-        let existing_key = uuid::Uuid::new_v4().to_string();
-        let existing =
-            crate::claude_accounts::transcript(&native, row.cwd.as_deref(), &existing_key).unwrap();
-        std::fs::create_dir_all(existing.parent().unwrap()).unwrap();
-        std::fs::write(existing, "existing conversation").unwrap();
-        assert!(
-            set_live_agent_session_key(&conn, &row.id, Some(&existing_key), &generation).unwrap()
-        );
-        assert_eq!(origin(), native);
-
-        conn.execute_batch("CREATE TRIGGER reject_rekey_origin BEFORE UPDATE OF launch_definition_json ON sessions BEGIN SELECT RAISE(FAIL, 'origin write rejected'); END;").unwrap();
-        assert!(set_live_agent_session_key(&conn, &row.id, Some(&new_key), &generation).is_err());
-        assert_eq!(
-            read().agent_session_key.as_deref(),
-            Some(existing_key.as_str())
-        );
-        assert_eq!(origin(), native);
-        conn.execute_batch("DROP TRIGGER reject_rekey_origin;")
-            .unwrap();
+        assert_eq!(key().as_deref(), Some(old_key.as_str()));
+        assert!(set_live_agent_session_key(&conn, &row.id, Some(&new_key), &generation).unwrap());
+        assert_eq!(key().as_deref(), Some(new_key.as_str()));
 
         set_exit_status(&conn, &row.id, SessionStatus::Stopped, chrono::Utc::now()).unwrap();
-        assert!(!set_live_agent_session_key(&conn, &row.id, Some(&new_key), &generation).unwrap());
-        assert_eq!(
-            read().agent_session_key.as_deref(),
-            Some(existing_key.as_str())
-        );
-        assert_eq!(origin(), native);
-        conn.execute(
-            "UPDATE sessions SET status = 'running' WHERE id = ?1",
-            [&row.id],
-        )
-        .unwrap();
-        assert!(set_live_agent_session_key(&conn, &row.id, Some(&new_key), &generation).unwrap());
-        assert_eq!(read().agent_session_key.as_deref(), Some(new_key.as_str()));
-        assert_eq!(origin(), work);
+        assert!(!set_live_agent_session_key(&conn, &row.id, Some(&old_key), &generation).unwrap());
+        assert_eq!(key().as_deref(), Some(new_key.as_str()));
     }
 
     #[test]
@@ -2072,7 +1981,6 @@ mod launch_definition_tests {
         let row = SessionRowDb::new_running("definition".into());
         insert(&conn, &row).unwrap();
         let definition = LaunchDefinition {
-            claude_account: None,
             command: "codex".into(),
             args: vec![],
             env: BTreeMap::new(),

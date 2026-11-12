@@ -77,7 +77,6 @@ pub(crate) struct AgentsPane {
     shell: WeakEntity<NativeRoot>,
     app_store: Entity<AppStore>,
     selected_runtime: Option<Runtime>,
-    accounts: Entity<super::claude_accounts::AccountsSection>,
     status: Option<RuntimeStatusResponse>,
     catalog: Vec<RuntimeCatalogEntry>,
     error: Option<String>,
@@ -175,12 +174,9 @@ impl AgentsPane {
             cx.notify();
         }));
 
-        let accounts =
-            cx.new(|cx| super::claude_accounts::AccountsSection::new(app_store.clone(), cx));
         Self {
             shell,
             app_store,
-            accounts,
             selected_runtime: None,
             status: None,
             catalog: Vec::new(),
@@ -604,16 +600,10 @@ impl AgentsPane {
         self.commit_override(runtime, cx);
     }
 
-    pub(crate) fn accounts_overlay(&self, cx: &gpui::App) -> gpui::AnyElement {
-        self.accounts.read(cx).confirm_overlay().into_any_element()
-    }
-
     pub(crate) fn is_composing(&self, cx: &gpui::App) -> bool {
-        self.accounts.read(cx).is_composing(cx)
-            || self
-                .overrides
-                .values()
-                .any(|field| field.read(cx).is_composing())
+        self.overrides
+            .values()
+            .any(|field| field.read(cx).is_composing())
     }
 
     fn reset_scroll(&self, cx: &mut Context<Self>) {
@@ -632,10 +622,6 @@ impl AgentsPane {
     }
 
     pub(crate) fn open_runtime(&mut self, runtime: Runtime, cx: &mut Context<Self>) {
-        if runtime == Runtime::ClaudeCode {
-            self.accounts
-                .update(cx, |accounts, cx| accounts.refresh(cx));
-        }
         self.selected_runtime = Some(runtime);
         self.reset_scroll(cx);
         cx.notify();

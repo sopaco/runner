@@ -355,7 +355,6 @@ pub(crate) struct NativeRoot {
     pub(crate) route: AppRoute,
     pub(crate) settings_return_route: AppRoute,
     pub(crate) usage_open: bool,
-    pub(crate) claude_account_picker: Option<Entity<runner_app::ui::select::StyledSelect>>,
     pub(crate) usage_anchor: Option<Bounds<Pixels>>,
     pub(crate) usage_installed: Vec<runner_core::protocol::model::Runtime>,
     /// Agents with a newer version on npm; enabled ones dot the usage

@@ -268,21 +268,6 @@ fn direct_entry_from_repo(
         .catalog()
         .is_some_and(|catalog| catalog.native_fork);
     Ok(DirectSessionEntry {
-        claude_account: d.row.launch_definition.as_ref().and_then(|definition| {
-            definition.claude_account.clone().or_else(|| {
-                (agent_runtime == "claude-code")
-                    .then(|| definition.env.get("CLAUDE_CONFIG_DIR"))
-                    .flatten()
-                    .map(|folder| runner_core::protocol::ClaudeSessionAccount {
-                        account_id: None,
-                        folder: folder.clone(),
-                        native: false,
-                        pinned: true,
-                        origin_folder: folder.clone(),
-                        permission_mode: "default".into(),
-                    })
-            })
-        }),
         session_id: d.row.id,
         project_id: d.row.project_id,
         role_id: d.row.role_id,

@@ -371,15 +371,6 @@ pub trait RuntimeAdapter: Send + Sync {
     ) -> SkillState {
         (self.skills().load)(home, codex_home)
     }
-    fn toggle_skill_with_env(
-        &self,
-        _home: &Path,
-        _path: &Path,
-        _enabled: bool,
-        _env: &std::collections::BTreeMap<String, String>,
-    ) -> Option<crate::error::Result<crate::skills::SkillCatalog>> {
-        None
-    }
     fn launch_role_args(&self, args: &[String]) -> Vec<String> {
         args.to_vec()
     }

@@ -18,9 +18,6 @@ pub(crate) fn core(
         runtime_shell_env,
         runtime_discovery,
         usage: Arc::new(runner_daemon::usage::UsageService::without_fetch()),
-        claude_accounts: Arc::new(
-            runner_daemon::claude_accounts::AccountService::without_authentication(),
-        ),
         buses: event_bus::BusRegistry::new(),
         routers: router::RouterRegistry::new(),
         mission_roster_locks: Default::default(),

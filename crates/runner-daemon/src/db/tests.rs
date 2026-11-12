@@ -470,7 +470,6 @@ fn usage_lkg_round_trips_through_app_state() {
     };
     let stored = UsageLkg {
         runtimes: [(runner_core::Runtime::Codex, usage(27.5))].into(),
-        claude_accounts: BTreeMap::from([("work".into(), usage(64.))]),
     };
     assert_eq!(usage_lkg(&pool).unwrap(), None);
     set_usage_lkg(&pool, &stored).unwrap();

@@ -48,23 +48,11 @@ impl SessionManager {
         {
             role.codex_speed = slot.codex_speed_override.or(role.codex_speed);
         }
-        let mut launch_definition = crate::session::launch_definition::from_effective(&role);
+        let launch_definition = crate::session::launch_definition::from_effective(&role);
         role.args = crate::runtimes::for_key(&role.runtime)
             .permissions()
             .apply_mission(&role.args);
-        let mut role = self.resolve_role_executable(&role, &pool)?;
-        launch_definition.claude_account = crate::claude_accounts::launch_account(
-            &pool,
-            &mut role,
-            &self.shell_env.read().unwrap().vars,
-            None,
-            true,
-        )?;
-        if let Some(account) = &mut launch_definition.claude_account {
-            account.permission_mode = crate::runtimes::for_key(&role.runtime)
-                .native_permission_mode(&role.args)
-                .expect("account runtime has a native permission mode");
-        }
+        let role = self.resolve_role_executable(&role, &pool)?;
 
         // Agent-native session resume: this is a *fresh* session row, so
         // there's no prior key to inherit. The runtime adapter still
@@ -147,15 +135,7 @@ impl SessionManager {
             system_prompt_path.as_deref(),
             first_turn.as_deref(),
             Some(&mission_bus_dir),
-            Some(&pool),
         );
-        crate::claude_accounts::sharing::launch(
-            &pool,
-            launch_definition.claude_account.as_ref(),
-            &role,
-            &mut spec,
-        )?;
-
         // Insert the row first (status=running with no runtime_*
         // metadata yet) so a fast-failing runtime spawn doesn't leave
         // a half-row. We update with runtime metadata once the

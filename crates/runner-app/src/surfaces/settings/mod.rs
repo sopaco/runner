@@ -1,7 +1,6 @@
 pub(crate) mod about;
 pub(crate) mod agents;
 pub(crate) mod archived;
-pub(crate) mod claude_accounts;
 pub(crate) mod diagnostics;
 pub(crate) mod mcp;
 pub(crate) mod notifications;

@@ -451,7 +451,6 @@ fn hovering_a_row_reveals_its_actions_in_a_frame_that_paints() {
 
 fn direct_session(id: &str, runtime: &str, status: SessionStatus) -> DirectSessionEntry {
     DirectSessionEntry {
-        claude_account: None,
         session_id: id.into(),
         project_id: None,
         role_id: None,

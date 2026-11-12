@@ -284,7 +284,6 @@ async fn serve_with_listener(
     let teardown = tokio::task::spawn_blocking(move || -> Result<()> {
         resume_consumer.stop();
         shutdown_core.sessions.begin_shutdown();
-        shutdown_core.claude_accounts.stop_logins();
         let mut ids = stamp_shutdown_sessions(&shutdown_core)?;
         for id in shutdown_core.sessions.live_session_ids() {
             if !ids.contains(&id) {

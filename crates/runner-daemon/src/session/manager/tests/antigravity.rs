@@ -257,7 +257,6 @@ fn antigravity_cwd_context_covers_chats_leads_workers_and_resumes_without_changi
             None,
             first_turn,
             mission.then_some(bus.as_path()),
-            None,
         );
         assert_eq!(spec.cwd.as_deref(), Some(cwd.as_path()));
         assert_eq!(&spec.args[..role.args.len()], &role.args, "{shape}");

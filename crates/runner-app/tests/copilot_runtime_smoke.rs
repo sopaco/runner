@@ -40,9 +40,6 @@ fn core_at(app_data_dir: PathBuf, db: Arc<runner_daemon::db::DbPool>) -> AppCore
         runtime_shell_env,
         runtime_discovery,
         usage: Arc::new(runner_daemon::usage::UsageService::default()),
-        claude_accounts: Arc::new(
-            runner_daemon::claude_accounts::AccountService::without_authentication(),
-        ),
         buses: runner_daemon::event_bus::BusRegistry::new(),
         routers: runner_daemon::router::RouterRegistry::new(),
         mission_roster_locks: Default::default(),
