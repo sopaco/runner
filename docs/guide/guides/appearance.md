@@ -19,7 +19,7 @@ Open **Settings → Appearance**. **Theme** follows the operating system or pins
 
 Choose both modes once, then switch between them without rebuilding the pairing. Claude Code follows Runner's light/dark switch live; other agents may use their own theme controls for colors they draw themselves.
 
-Agents that draw their own colors, such as Codex, choose light or dark styling once, when they start, from the terminal palette. Chats that resume when Runner starts get the terminal palette you last used. If **Theme** follows the operating system and it switched between light and dark while Runner was closed, stop and resume a chat whose colors look mismatched. Terminals on another computer use that computer’s terminal palette; see [Remote access](remote-access.md#pair-and-open-another-computer-in-the-app).
+Agents that draw their own colors, such as Codex, choose light or dark styling once, when they start, from the terminal palette. Chats that resume when Runner starts get the terminal palette you last used. If **Theme** follows the operating system and it switched between light and dark while Runner was closed, stop and resume a chat whose colors look mismatched.
 
 ## Window material
 

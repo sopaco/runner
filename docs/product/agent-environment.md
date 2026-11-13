@@ -29,7 +29,7 @@ Claude Code's subagents spawn Claude and Codex's spawn Codex. No vendor has a re
 | Living past the app | Sessions continue in runnerd when the app quits ([`vision.md`](./vision.md) §4.2) | [#645](https://github.com/yicheng47/runner/issues/645), shipped in 0.13 |
 | Planned limits | `MISSION_SPAWN_CAP` (8) and one level of spawning; permissions granted per role or slot | With the verbs in [#916](https://github.com/yicheng47/runner/issues/916) |
 | Reaching the person | Every member asks the person directly with `runner ask` / `ask_human`; desktop notifications | Shipped; [#701](https://github.com/yicheng47/runner/issues/701); `ask_lead` retired in [#562](https://github.com/yicheng47/runner/issues/562) Phase 3 |
-| Keeping track | Plan usage is shipped; the token ledger is unscheduled. Remote control starts in the browser, then adds iOS; the desktop Active view is separate | [#706](https://github.com/yicheng47/runner/issues/706), [#630](https://github.com/yicheng47/runner/issues/630), [#836](https://github.com/yicheng47/runner/issues/836), [#912](https://github.com/yicheng47/runner/issues/912), [#887](https://github.com/yicheng47/runner/issues/887) |
+| Keeping track | Plan usage is shipped; the token ledger is unscheduled; the desktop Active view is separate | [#706](https://github.com/yicheng47/runner/issues/706), [#630](https://github.com/yicheng47/runner/issues/630), [#887](https://github.com/yicheng47/runner/issues/887) |
 
 The proposed cap and one-level rule belong to #916; they are not a claim that the current CLI implements the reserved coordinator verbs. Today the person controls membership, including when an authorized outside agent operates the CLI for them.
 
@@ -55,4 +55,4 @@ Steps 1 and 2 work today from outside the mission: #562 shipped empty missions a
 
 ## Roadmap implications
 
-The [roadmap](../roadmap.md) owns release scheduling. The session host and #562's mission delegation have shipped; reliable delivery (#907) shipped in 0.16.5, and delegation's remaining follow-through is #748 and per-role or per-slot verbs (#916). File review follows. Remote supervision starts with browser access to local hosts, then iOS on the same protocol, then desktop-to-desktop SSH. Historical milestone numbers from the original September direction are superseded by that plan.
+The [roadmap](../roadmap.md) owns release scheduling. The session host and #562's mission delegation have shipped; reliable delivery (#907) shipped in 0.16.5, and delegation's remaining follow-through is #748 and per-role or per-slot verbs (#916). File review follows. Historical milestone numbers from the original September direction are superseded by the roadmap.

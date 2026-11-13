@@ -80,16 +80,6 @@ Runner brings CLI coding agents together in reusable crews, with real terminals 
   </tr>
   <tr>
     <td width="50%" valign="middle">
-      <a href="assets/remote_control.png"><img src="assets/remote_control.png" alt="Runner's computer picker listing this Mac and another computer on the same account" width="100%" /></a>
-    </td>
-    <td width="50%" valign="middle">
-      <h3>Remote control</h3>
-      <p>Pick another computer in the sidebar to use its live terminals, start chats and missions, and answer your crew. Connections are encrypted end to end. <a href="./docs/guide/guides/remote-access.md">Remote access guide →</a></p>
-      <p><strong>Private beta:</strong> invite-only, currently available in mainland China.</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="middle">
       <a href="assets/mission_terminal.png"><img src="assets/mission_terminal.png" alt="A mission slot's own terminal: the coder's Claude Code session, beside the crew's session cards" width="100%" /></a>
     </td>
     <td width="50%" valign="middle">

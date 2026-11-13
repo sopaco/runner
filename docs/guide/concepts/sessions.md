@@ -26,11 +26,7 @@ When a runtime wraps an underlined URL onto indented rows or a hyperlink inside 
 | Fork a chat | Creates another chat from the conversation, for runtimes that support forking |
 | Archive a chat | Stops it and removes it from active chat lists; find it in Settings → Archived |
 
-Shells have no Stop, Resume or Restart controls. Interrupt commands with Ctrl+C. Closing a terminal or exiting its shell with any exit code closes the pane rather than archiving it. Terminal pane ×, the close shortcut, sidebar terminal close and mission-drawer shell close act immediately without confirmation, locally and remotely, even while a command runs. Archiving a chat still asks for confirmation, and Archive all keeps its chat/terminal counts. Closing a window saves its layout and can leave its sessions running.
-
-## Claude Code accounts
-
-When several [Claude Code accounts](../guides/claude-accounts.md) are configured, new sessions and resumes use the active account. Running sessions keep their current account. A paused chat identifies the previous and active accounts; resuming continues its original transcript, and a fork saves a new conversation under the active account. Explicit `CLAUDE_CONFIG_DIR` environment pins take precedence.
+Shells have no Stop, Resume or Restart controls. Interrupt commands with Ctrl+C. Closing a terminal or exiting its shell with any exit code closes the pane rather than archiving it. Terminal pane ×, the close shortcut, sidebar terminal close and mission-drawer shell close act immediately without confirmation, even while a command runs. Archiving a chat still asks for confirmation, and Archive all keeps its chat/terminal counts. Closing a window saves its layout and can leave its sessions running.
 
 ## Quit, relaunch and recover
 

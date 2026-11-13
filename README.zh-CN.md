@@ -80,16 +80,6 @@ Runner 让命令行编码 agent 通过可复用的 crew、真实终端和共享 
   </tr>
   <tr>
     <td width="50%" valign="middle">
-      <a href="assets/remote_control.png"><img src="assets/remote_control.png" alt="Runner 的电脑选择器列出这台 Mac 和同一账号下的另一台电脑" width="100%" /></a>
-    </td>
-    <td width="50%" valign="middle">
-      <h3>远程控制</h3>
-      <p>在侧边栏切换到另一台电脑，操作它的实时终端、发起 chat 和 mission，随时回复 crew。连接采用端到端加密。<a href="./docs/guide/guides/remote-access.md">远程访问指南 →</a></p>
-      <p><strong>内测中：</strong>需要邀请码，目前仅限中国大陆使用。</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="middle">
       <a href="assets/mission_terminal.png"><img src="assets/mission_terminal.png" alt="mission 里一个槽位自己的终端：coder 的 Claude Code 会话，旁边是 crew 的会话卡片" width="100%" /></a>
     </td>
     <td width="50%" valign="middle">

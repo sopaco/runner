@@ -2,8 +2,6 @@
 
 在设置中查看智能体可用的工具与指令。Runner 读取各运行时自己的配置；受支持的开关会修改该配置，影响 Runner 内外的新会话。
 
-Claude Code 配置多个账号时，这些面板编辑的是拥有共享配置的 **主账号（main account）** 。 **设为主账户（Make main）** 会更改配置所有者。关联账号在新会话中使用主账号的 MCP 服务器和逐项共享的技能。各自的 `skills/` 目录、同步技能和同名本地条目保留；下次启动前会补入主账号新增条目。主账号已启用且由用户安装的插件在启动时加载，各账号保留自己的插件状态、登录与对话历史。设置或停止共享见 [Claude Code 账号](claude-accounts.md)。
-
 ## MCP 服务器
 
 1. 打开 **设置 → MCP（Settings → MCP）** 并选择智能体。
@@ -23,7 +21,7 @@ Runner 只写入指定名称的服务器条目。为智能体启用服务器时�
 | Grok | `~/.grok/config.toml` |
 | OpenCode v2 | `~/.config/opencode/opencode.jsonc` |
 
-Claude Code 的原生主账号使用 `~/.claude.json`。新增的主账号使用 `<account folder>/.claude.json`；技能目录与开关使用 `<account folder>/skills/` 和 `<account folder>/settings.json`。
+Claude Code 的原生登录使用 `~/.claude.json`，技能目录与开关位于 `~/.claude/skills/` 和 `~/.claude/settings.json`。
 
 以上为默认值；运行时环境设置可能改变部分路径。两个平台上的 `~` 均表示用户主目录。实际文件以 Runner 显示的路径为准。Runner 不提供 Cursor 和 pi 的 MCP 管理。
 

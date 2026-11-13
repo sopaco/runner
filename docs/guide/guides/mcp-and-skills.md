@@ -2,8 +2,6 @@
 
 Use Settings to inspect the tools and instructions available to your agents. Runner reads each runtime's own configuration, and supported switches change that configuration for new sessions inside and outside Runner.
 
-For Claude Code with multiple accounts, these panes edit the **main account**, which owns shared configuration. **Make main** changes that owner. Linked accounts use main’s MCP servers and individual shared skill entries in new sessions. Their own `skills/` directory, synced skills and same-named local entries stay in place; new main entries are added before the next launch. Enabled user-installed main plugins load at launch while each account keeps its own plugin state; each account keeps its own sign-in and conversation history. See [Claude Code accounts](claude-accounts.md) to set up or stop sharing.
-
 ## MCP servers
 
 1. Open **Settings → MCP** and select an agent.
@@ -23,7 +21,7 @@ Runner writes only the named server entry. Enabling a server for an agent can co
 | Grok | `~/.grok/config.toml` |
 | OpenCode v2 | `~/.config/opencode/opencode.jsonc` |
 
-For Claude Code, the native main account uses `~/.claude.json`. An added main account uses `<account folder>/.claude.json`; its skill catalog and switches use `<account folder>/skills/` and `<account folder>/settings.json`.
+For Claude Code, the native sign-in uses `~/.claude.json`, with its skill catalog and switches in `~/.claude/skills/` and `~/.claude/settings.json`.
 
 These are defaults; runtime environment settings can change some paths. `~` means your home directory on either platform. Use the path displayed by Runner for the actual file. Cursor and pi do not have MCP management in Runner.
 

@@ -22,7 +22,7 @@ Record support separately for macOS and Windows. A CLI probe, passing Rust tests
 
 Register a stable runtime key, display name, default command, and catalog entry. The key must round-trip through persisted roles, slot overrides, direct-chat sessions, and the CLI/API. Preserve the existing handling of unknown and legacy runtime names.
 
-Settings → Agents must detect the executable, support an explicit executable override, refresh discovery, and honor the enable switch. The chat launcher, role creation, and crew slot overrides must agree on which runtime is selected and available. Launcher agent rows pass no model, effort or speed overrides; role rows inherit saved role settings. The pane launcher uses the same client launch and layout calls locally and remotely, with no daemon storage for its per-computer agent/role recency file. Launches must use the resolved command and existing environment pipeline, including login-shell PATH, proxy variables, role environment, and the app's bundled `runner` command.
+Settings → Agents must detect the executable, support an explicit executable override, refresh discovery, and honor the enable switch. The chat launcher, role creation, and crew slot overrides must agree on which runtime is selected and available. Launcher agent rows pass no model, effort or speed overrides; role rows inherit saved role settings. The pane launcher uses the same client launch and layout calls, with no daemon storage for its agent/role recency file. Launches must use the resolved command and existing environment pipeline, including login-shell PATH, proxy variables, role environment, and the app's bundled `runner` command.
 
 **Accept:** launch a runtime-only chat, a role-backed chat, and a mission slot; repeat through an executable override. A missing executable or invalid override has a useful error, and disabling the agent removes it from new selections without corrupting saved rows.
 
@@ -155,7 +155,7 @@ Each agent owns its integration in [`crates/runner-daemon/src/runtimes/<name>/`]
 
 Generic `StatusSemantics` defaults do not grant hook-specific behavior to unsupported agents. Standalone reducer events retain their historical unbatched semantics separately. Compaction policies preserve the order of exact prior-state restoration, completed-turn restoration and working-turn continuation.
 
-Claude account management remains a deliberate exception: shared usage, model discovery and version refresh coordinate the main or multiple Claude accounts, and the app exposes their account controls. Core/CLI hook admission also retains its shared wire validation, including caller-thread correlation; it cannot depend on the daemon adapter. Runtime identity conversions, persisted legacy option keys, Shell lifecycle and icon/label presentation stay at their existing boundaries.
+Core/CLI hook admission retains its shared wire validation, including caller-thread correlation; it cannot depend on the daemon adapter. Runtime identity conversions, persisted legacy option keys, Shell lifecycle and icon/label presentation stay at their existing boundaries.
 
 ## Adding a runtime
 

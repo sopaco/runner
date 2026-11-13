@@ -2,7 +2,7 @@
 
 > What we're building and why. The technical "how" lives in [`../arch/arch.md`](../arch/arch.md) — when this doc and the arch doc conflict on a protocol / schema / event-model question, the arch doc wins.
 
-Current product description reconciled on 2026-10-22. The [roadmap](../roadmap.md) owns scheduling and distinguishes production releases, changes on `main` and remote work on its umbrella.
+Current product description reconciled on 2026-10-22. The [roadmap](../roadmap.md) owns scheduling and distinguishes production releases from changes on `main`.
 
 ## 1. The problem
 
@@ -108,7 +108,7 @@ The user-facing surfaces, described by the value they deliver, not by their impl
 - **The `runner` CLI** — one bundled binary is the external surface for agents, scripts, and people at a terminal: projects, roles, crews and slots, mission and chat lifecycle, the feed (with `--follow`), signals and messages. Inside a mission the caller's mission and handle come from the environment; outside, `--mission` is a flag and the caller acts for the person unless `--as <handle>` names a seat they hold. `--json` is what agents read; the default output is shaped for people.
 - **Discovery through a skill, not configuration.** No agent is set up to reach Runner. Each detected runtime finds the CLI through a managed `runner` skill in its native skills root; the development build has a separate `runner-dev` skill. Installation respects foreign folders and the General setting. The [architecture](../arch/arch.md#96-agent-discovery-skill) owns the current roots. A provider Runner has never heard of only needs the binary on PATH.
 - **One way in.** The MCP integration — the `runner-mcp` bridge and the entries Runner wrote into each agent's config — was removed in 0.11.0, the release that shipped the CLI; mission coordination has one CLI surface. The internal optional Codex status helper is separate from this retired workspace API. The CLI uses the same `runnerd.sock` client protocol as the app, with typed requests and pushed mission events. The old MCP endpoint remains only as an accept-and-close guard against a 0.12 app replacing the daemon. Settings → MCP remains as the catalog of the user's own servers.
-- `runnerd` owns state; the app and CLI are local clients. Planned [web remote control](https://github.com/yicheng47/runner/issues/836) adds host enrollment, an outbound relay connection and a versioned encrypted client protocol. A person first reaches existing sessions from a desktop or phone browser; the [iOS companion](https://github.com/yicheng47/runner/issues/912) reuses that foundation, followed by [desktop-to-desktop SSH](https://github.com/yicheng47/runner/issues/808). The relay cannot read session traffic, and rejecting a remote client must leave the host's agents running.
+- `runnerd` owns state; the app and CLI are local clients.
 
 ## 5. The demo loop
 
@@ -132,13 +132,13 @@ These are intentionally out of scope — they belong to a different product or a
 
 - **An agent development environment.** Editing, staging, committing and pushing belong to the agent's own tools, git or an IDE. Runner is the environment agents work *in*, not a workbench for building them. It does not create git worktrees: a crew that needs its own checkout makes one from its brief, and worktree isolation ([#403](https://github.com/yicheng47/runner/issues/403)) was closed as not planned on 2026-09-22. Reading the work is the exception: a read-only file and diff viewer whose review comments go back to the agent ([#634](https://github.com/yicheng47/runner/issues/634)), closed on 2026-09-22 and reopened on 2026-10-08, because reading an agent's changes was still the most common reason to leave Runner.
 - Cross-mission memory / persistent crew brain.
-- A distributed coordination bus. The shipped daemon owns local sessions. Browser access, the iOS companion and desktop-to-desktop SSH are separate planned remote tracks; the mission bus remains host-local.
+- A distributed coordination bus. The shipped daemon owns local sessions. Desktop-to-desktop SSH is a separate planned remote track; the mission bus remains host-local.
 - Sandboxing beyond the child process's own permissions.
 - Observability dashboards. The unscheduled token ledger ([#630](https://github.com/yicheng47/runner/issues/630)) proposes per-session tokens and subscription quota; it has not shipped.
 - Marketplace of roles.
 - Multi-human collaboration on the same mission.
 - Thread/fact primitives for mission coordination.
-- A general-purpose secrets vault for role environments. Remote-access credentials have their own OS secret-store contract in the remote design.
+- A general-purpose secrets vault for role environments.
 - LLM-based signal routing (the router is a flat dispatcher by design — role prompts and team conventions define coordination).
 - Additional platforms before their own validation. macOS and Windows ship today; Linux ARM64/x86_64 source/package support is in development, with native and WSL validation tracked separately in [#823](https://github.com/yicheng47/runner/issues/823).
 

@@ -1,6 +1,6 @@
 # runnerd, sessions, and mission routing: a code walkthrough
 
-Checked against Runner `nightly-remote` at `cbb877c4b992` on 2026-10-24. This continues the [runtime adapter walkthrough](runtime-adapters.md): adapters describe how to integrate an agent; this note follows the service that owns its process, the manager that tracks its session, and the router that delivers mission notifications. The [process model](../arch/process-model.md), [concurrency reference](../arch/concurrency.md), and [architecture](../arch/arch.md) remain the broader references. The remote process model is included below; encryption and transport details are covered in [remote control](remote-control.md).
+Checked against Runner `nightly-remote` at `cbb877c4b992` on 2026-10-24. This continues the [runtime adapter walkthrough](runtime-adapters.md): adapters describe how to integrate an agent; this note follows the service that owns its process, the manager that tracks its session, and the router that delivers mission notifications. The [process model](../arch/process-model.md), [concurrency reference](../arch/concurrency.md), and [architecture](../arch/arch.md) remain the broader references.
 
 The central ownership rule is that **runnerd owns the running work**. The desktop app is a client that displays it. A mission groups sessions and has a log, bus, and router inside the daemon. Each live session has an agent or shell process connected to a PTY. Closing a client connection does not end that work.
 
@@ -59,85 +59,6 @@ The daemon is shipped through the CLI binary. [`runner-cli/src/main.rs`](../../c
 
 The local transport is an owner-only Unix-domain socket or Windows named pipe. Typed request/response frames, pushed application events, and terminal frames share this connection. [`server.rs`](../../crates/runner-daemon/src/daemon/server.rs) dispatches ordinary requests through blocking workers; terminal input has its own ordered session queue. A disconnected client loses its attachments and window registrations, while the session processes remain owned by runnerd.
 
-### With remote control enabled
-
-Suppose computer A controls a mission running on computer B. **B's runnerd still owns the mission, its SQLite rows and event log, its terminal models, and every agent process.** A's desktop app reaches B through A's own runnerd and the hosted relay. Enabling remote access adds networking tasks to the existing daemon; it does not launch a second local daemon for remote sessions.
-
-```mermaid
-flowchart LR
-    subgraph client["Computer A: controlling computer"]
-        appA["Runner app process: remote workspace and terminal mirrors"]
-        subgraph daemonA["runnerd process A"]
-            ipcA["Local IPC server"]
-            routeA["Remote client route task: channel, requests, terminal streams"]
-            ipcA <--> routeA
-        end
-        appA <-->|"local IPC"| ipcA
-    end
-    relay["Hosted relay service: authenticated routing of encrypted channel frames"]
-    subgraph host["Computer B: session host"]
-        appB["Optional Runner app process: local views"]
-        subgraph daemonB["runnerd process B"]
-            remoteB["Host connection task and per-client channel tasks"]
-            adapterB["Companion adapter"]
-            coreB["AppCore: SessionManager, SQLite, mission bus and router"]
-            remoteB <--> adapterB
-            adapterB <--> coreB
-        end
-        appB <-->|"local IPC"| coreB
-        coreB <-->|"local PTY"| agentsB["Agent and shell child processes"]
-    end
-    routeA <-->|"A dials /relay/client for B"| relay
-    remoteB <-->|"B dials /relay/host"| relay
-```
-
-Both WebSocket connections are initiated outbound and carry traffic in both directions. B keeps its host connection while remote access is active. A opens a client route for the selected host; multiple panes and mission requests share that route. The host connection multiplexes channels from remote clients, and each channel can carry several terminal streams. Opening another remote pane therefore does not imply another agent process, daemon, or WebSocket.
-
-“Client” and “host” are roles in this connection, not different daemon binaries. The same runnerd can host its own sessions and control another computer. A may consequently have its own host connection in addition to the A-to-B client route shown here. Pausing this computer's hosting leaves it signed in for outbound client use; the client-side `signed_in` check accepts `RemoteState::Paused`.
-
-The relay is a separately deployed service. It authenticates routing, assigns channels, forwards bounded encrypted frames, and closes routes. The paired endpoints hold the end-to-end channel keys. Agent execution, terminal parsing, session persistence, and mission message routing stay on B. A remote Start or Resume action runs B's application operations and creates or resumes the process there.
-
-This topology is implemented in the checked revision, including [`remote/client/`](../../crates/runner-daemon/src/remote/client/) and the desktop [`surfaces/remote_client/`](../../crates/runner-app/src/surfaces/remote_client/). The older remote-control note's description of the client as *proposed* belongs to its earlier revision. Code names such as `BrowserPair`, `Controller::Browser`, and `browser_resize` refer to the remote Runner client in this implementation.
-
-#### Where the extra work runs
-
-[`serve_with_listener`](../../crates/runner-daemon/src/daemon/server.rs) calls `remote::spawn` inside the daemon's existing Tokio runtime and connects the companion adapter to `AppCore` through a weak reference. The networking subsystem has its own task supervision, so a failed host networking task can restart without restarting sessions.
-
-| Component | Runs in | Owns |
-| --- | --- | --- |
-| Host connection state machine | Tokio tasks in B's runnerd, [`remote/mod.rs`](../../crates/runner-daemon/src/remote/mod.rs) and [`machine.rs`](../../crates/runner-daemon/src/remote/machine.rs) | Enrollment/pause state, host WebSocket, heartbeats, retry deadlines, and channel registry. |
-| Host channel and companion adapter | One channel task in B's runnerd, [`channels.rs`](../../crates/runner-daemon/src/remote/channels.rs) and [`companion/mod.rs`](../../crates/runner-daemon/src/companion/mod.rs) | Handshake, encrypted records, request dispatch, overview/feed subscriptions, terminal attachments, and controller lease. Synchronous core calls use blocking workers; attached terminal streams have forwarding threads. |
-| Client route | Tokio task in A's runnerd, [`client/route.rs`](../../crates/runner-daemon/src/remote/client/route.rs) | One target-host connection, request IDs, channel generation, reconnect, and shared subscriptions. |
-| Client terminal streams | A's runnerd, [`client/terminal.rs`](../../crates/runner-daemon/src/remote/client/terminal.rs) | Snapshot assembly, sequence checks, bounded replay/attachment queues, and conversion to the ordinary terminal-frame interface. |
-| Remote terminal presentation | A's app, [`remote_client/transport.rs`](../../crates/runner-app/src/surfaces/remote_client/transport.rs) | Local mirrors and input encoding using a transport wrapper over its own daemon client. |
-
-A's remote terminal streams are transport state. They are not local `SessionManager` children or copies of B's authoritative terminal model. B's normal PTY readers, forwarders, reducer and delivery gates remain the execution path. The host adapter's [`DaemonCore`](../../crates/runner-daemon/src/companion/core.rs) reaches those existing services through a narrow interface.
-
-#### Input, output, and mission messages across the boundary
-
-For one remote keystroke, A's app encodes input and sends it over local IPC to A's daemon. The client route packages a companion `input` message, encrypts it, and sends it through the relay. B's channel decrypts it; the companion adapter records input observations and calls `SessionManager::queue_terminal_input`. From there it follows the same ordered input worker and delivery gate as typing on B's desktop. A remote human draft can therefore hold back a mission inbox notice.
-
-Output takes the reverse path from B's authoritative terminal: attach snapshot and numbered frames → companion messages → encrypted channel → A's daemon's terminal subscription → A's app mirror. B continues parsing output and answering terminal queries with no desktop attached on either side. B's local app, when open, is another viewer of that same terminal.
-
-A PTY still has one size. The host records its controller as Desktop, a remote channel, or None. Remote viewport changes apply through that controller rule, and all viewers adopt the host's ordered resize frames. Detaching the controlling remote channel releases its lease to None and preserves the last size; the host desktop can explicitly take control back. Taking control changes terminal presentation ownership, not ownership of the child process.
-
-Remote mission Post and Answer requests also execute on B, append to B's mission log, and enter B's existing inbox/router path. Agent-to-agent messages within that mission remain local log writes and local router delivery. A mission and its members remain owned by one host daemon; the relay carries the operator's view and commands.
-
-#### Disconnects and recovery
-
-| Event | Connection/view effect | Effect on B's agents and mission router |
-| --- | --- | --- |
-| A closes a remote pane or disconnects its app | Release its terminal attachment and app-owned overview subscriptions; a shared route may remain for other consumers. | Continue running. |
-| Relay or network disconnects | Drop affected channels and controller leases. Host/client networking retries; a retained client terminal stream reattaches with a fresh snapshot and `IfFree` control. | Continue running while B's daemon stays alive. |
-| B pauses remote access | Close the host connection and its client channels; retain enrollment for later unpause. | Continue locally. |
-| A's runnerd stops or crashes | A's remote routes disappear. A later client connection must rebuild its views. | B continues running. |
-| B's app quits with Keep | B's daemon and remote host connection remain available. | Continue running. |
-| B's runnerd stops or crashes | Host becomes unavailable. | Follow the local daemon shutdown/crash behavior below; reconnecting from A cannot recover the old PTY. |
-
-Reconnect is transport recovery. The client route rejects input while unready and uses a channel generation to discard input queued for a previous connection. Pending commands fail on route loss and are not automatically replayed; a command whose response was lost may already have executed on B, so inspect the refreshed host state before retrying a mutation. Retained terminal streams reattach, while mission feed subscriptions must be refreshed/followed again. An unused connected route closes after 60 seconds when it has no overview followers, feeds, terminal streams, or pending requests.
-
-The host adapter drops terminal subscriptions and releases the channel's controller lease on channel teardown; that cleanup does not call session Stop. Bounded terminal queues and encrypted-record credit keep a slow viewer's backlog separate from PTY execution. These are the boundaries that let remote control disappear while the mission continues.
-
 ### Startup and replacement
 
 Follow [`daemon_process.rs`](../../crates/runner-core/src/daemon_process.rs), then [`daemon/server.rs`](../../crates/runner-daemon/src/daemon/server.rs) and [`daemon/boot.rs`](../../crates/runner-daemon/src/daemon/boot.rs):
@@ -161,10 +82,9 @@ The process contains both Tokio tasks and ordinary OS threads. The PTY API is bl
 | Daemon | `runner-ipc` Tokio runtime, connection tasks, blocking request workers, discovery/usage/other services. | IPC frames and request IDs; requests can execute concurrently. |
 | Live session | `pty-reader-…`, `pty-idle-…`, manager forwarder, terminal-event workers, and ordered terminal-input worker. | Runtime output channel, per-session state lock, delivery gate, PTY writer mutex. |
 | Mounted mission | `notify` watcher, `event-bus-…` consumer, and `mission-dispatch` driver. | Log byte order, complete projection batches, dispatcher input channel and deadlines. |
-| Remote control | Host connection/channel tasks and client route tasks on `runner-ipc`, plus attachment forwarders and blocking adapter calls. | Channel generations, request IDs, terminal sequence numbers, and bounded queues. Session execution stays on the host. |
 | Startup/lifecycle work | Background spawn batches, conversation-key capture, resize settlement, resume and teardown helpers as needed. | Cancellation flags, launch identity, resume claims, and shutdown gate. |
 
-This is a map of responsibilities, not an exact fixed thread count. A watcher or terminal model can have additional workers, and each attached terminal needs stream forwarding. There is no thread or process dedicated to “the lead” beyond the same session machinery every other member uses.
+This is a map of responsibilities, not an exact fixed thread count. A watcher or terminal model can have additional workers. There is no thread or process dedicated to “the lead” beyond the same session machinery every other member uses.
 
 The session map is `Mutex<HashMap<String, Arc<Mutex<SessionState>>>>`. The outer mutex protects membership; each session has its own mutex for mutable state. Code clones the state handle and releases the map lock before locking that session. One busy terminal therefore does not require holding a daemon-wide session lock while its output is parsed.
 
@@ -445,7 +365,6 @@ Read one path end to end before reading every runtime specialization:
 3. **One running session:** [`PtyRuntime::spawn`](../../crates/runner-daemon/src/session/pty_runtime.rs) → [`start_forwarder_thread`](../../crates/runner-daemon/src/session/manager/output.rs) → [`SessionModel::apply`](../../crates/runner-daemon/src/session/state/mod.rs). Follow one output chunk and one hook event separately.
 4. **One message:** [`msg::post`](../../crates/runner-cli/src/msg.rs) → [`EventLog::append`](../../crates/runner-core/src/event_log/log.rs) → [`BusState::tick`](../../crates/runner-daemon/src/event_bus/mod.rs) → [`RouterSubscriber::caught_up`](../../crates/runner-daemon/src/router/mod.rs) → [`Dispatcher::advance`](../../crates/runner-daemon/src/router/dispatch.rs) → manager delivery gate → `msg::read` and `ReadBatch::print_and_ack`.
 5. **Recovery:** [`kill`](../../crates/runner-daemon/src/session/manager/lifecycle.rs) → [`resume_with_fresh_fallback`](../../crates/runner-daemon/src/session/manager/spawn.rs) → [`reconstruct_from_log`](../../crates/runner-daemon/src/router/mod.rs). Trace which IDs stay stable and which launch guards change.
-6. **Remote ownership:** [`remote_client::RemoteTransport`](../../crates/runner-app/src/surfaces/remote_client/transport.rs) → local daemon [`server.rs`](../../crates/runner-daemon/src/daemon/server.rs) → [`client/route.rs`](../../crates/runner-daemon/src/remote/client/route.rs) → relay → host [`channels.rs`](../../crates/runner-daemon/src/remote/channels.rs) → [`companion::DaemonCore`](../../crates/runner-daemon/src/companion/core.rs). Follow remote input into the host's ordinary session queue, then compare channel teardown with session Stop.
 
 The existing tests make useful executable explanations:
 
